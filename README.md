@@ -17,7 +17,8 @@ El código está organizado por responsabilidad dentro de `com.banco.batch`:
 - `model`: las entidades JPA (Transaccion, CuentaInteres, MovimientoAnual, EstadoCuentaAnual).
 - `processor`: el ItemProcessor de cada job, donde vive la validación y transformación de datos.
 - `reader`: el reader custom que arma el informe agregado de cuentas anuales.
-- `policy`: el SkipPolicy custom del job de transacciones.
+- `policy`: los SkipPolicy custom de cada job (`TransaccionSkipPolicy`, `InteresSkipPolicy`, `CuentaAnualSkipPolicy`), cada uno con su propio criterio de qué excepciones perdonar.
+- `partition`: el `Partitioner` custom que reparte `transaccionesJob` en particiones por rango de filas.
 - `decider`: el JobExecutionDecider del job de transacciones.
 - `listener`: los listeners que loguean skips, steps y jobs.
 - `config`: la configuración de cada Job (reader, processor, writer, steps, paralelismo).
@@ -36,20 +37,26 @@ Cada proceso legacy quedó como un Job independiente con su propio Reader, Proce
 
 ## Escalamiento y procesamiento paralelo
 
-Los tres steps de lectura (`transaccionStep`, `interesStep`, `movimientoStep`) corren en paralelo con 3 hilos (`ThreadPoolTaskExecutor`, `corePoolSize=3`, `maxPoolSize=3`, `queueCapacity=10`) y chunks de tamaño 5. El reader de cada uno está envuelto en `SynchronizedItemStreamReader` porque `FlatFileItemReader` no es thread-safe por sí solo.
+Elegimos dos técnicas de escalado distintas a propósito, para poder comparar sus resultados sobre datos reales.
 
-`informeAnualStep` queda fuera de este esquema a propósito: es una agregación con una sola consulta JPQL sobre datos ya persistidos, no hay lectura de archivo que se beneficie de varios hilos.
+`transaccionStep` usa particiones. Un `TransaccionPartitioner` divide el CSV en 3 rangos de filas (gridSize 3) y un `TaskExecutorPartitionHandler` corre cada rango como una ejecución de step independiente, en su propio hilo. Cada partición tiene su propio `FlatFileItemReader` (`@StepScope`, con `linesToSkip`/`maxItemCount` según su rango), así que a diferencia del multithreading no hay un reader compartido que sincronizar. Con las 10 filas de `transacciones.csv` el reparto quedó 4-3-3, con las 3 particiones corriendo en paralelo.
+
+`interesStep` sigue con multithreading, pero ahora la cantidad de hilos y el chunk son configurables sin recompilar (`batch.intereses.hilos` y `batch.intereses.chunk` en `application.properties`, o por línea de comandos). Probamos el mismo dataset con 3 configuraciones distintas: con 1 hilo y chunk 5 el job tardó 543ms, con 3 hilos y el mismo chunk bajó a 269ms, y con 5 hilos y chunk 10 llegó a 240ms. La tendencia es clara: más hilos, menos tiempo. El valor por defecto en `application.properties` se dejó en 3 hilos/chunk 5 (el original); ajustarlo a la configuración más rápida encontrada queda para la etapa de optimización global.
+
+`movimientoStep` (dentro de `cuentasAnualesJob`) sigue con multithreading fijo (3 hilos, `SynchronizedItemStreamReader`), sin cambios, no era parte de esta comparación. `informeAnualStep` sigue fuera de cualquier esquema paralelo por la misma razón de siempre: es una agregación JPQL sobre datos ya persistidos.
 
 ## Tolerancia a fallos
 
 Usamos dos mecanismos distintos, para dos tipos de error distintos:
 
-- **SkipPolicy** (omisión de datos inválidos): en `transaccionesJob` hay un `TransaccionSkipPolicy` custom que permite hasta 20 omisiones, solo para errores de parseo/formato. En `interesesJob` y `cuentasAnualesJob` se usa `skipLimit(50).skip(Exception.class)`.
-- **RetryPolicy** (fallos transitorios de infraestructura): los tres steps reintentan hasta 3 veces ante un `TransientDataAccessException` (por ejemplo, un deadlock momentáneo de MySQL). A diferencia del skip, esto no descarta el dato — reintenta la misma operación porque el error no depende del contenido del registro.
+- **SkipPolicy** (omisión de datos inválidos): ahora los 3 Jobs tienen su propia policy en vez de perdonar cualquier `Exception`. `TransaccionSkipPolicy` e `InteresSkipPolicy` solo perdonan `FlatFileParseException` y `NumberFormatException`; `CuentaAnualSkipPolicy` agrega también `DateTimeParseException`, por los dos formatos de fecha que acepta el CSV de movimientos. El límite de omisiones de cada Job es configurable (`batch.transacciones.skip-limite`, `batch.intereses.skip-limite`, `batch.cuentas-anuales.skip-limite`), 20 por defecto en los tres.
+- **RetryPolicy** (fallos transitorios de infraestructura): los tres steps reintentan ante un `TransientDataAccessException` (por ejemplo, un deadlock momentáneo de MySQL), con el límite de reintentos también externalizado (`batch.*.retry-limite`, 3 por defecto). A diferencia del skip, esto no descarta el dato, reintenta la misma operación porque el error no depende del contenido del registro.
 
 ## Control de finalización
 
 `transaccionesJob` termina de forma distinta según cuántos registros se saltearon en `transaccionStep`, a través de un `JobExecutionDecider` (`TransaccionResultadoDecider`):
+
+Como `transaccionStep` ahora corre particionado, el decider no lee el `skipCount` de un solo step: suma el de todas las ejecuciones cuyo nombre empieza con `transaccionStep` (las 3 particiones), para no perder de vista omisiones que ocurran en cualquiera de ellas.
 
 - 0 omisiones → el job termina normal (`OK`).
 - 1 a 5 omisiones → termina con advertencia (`COMPLETED WITH WARNINGS`).
@@ -88,6 +95,8 @@ Si el contenedor ya existe, alcanza con `docker start banco-mysql`. La configura
 ./mvnw spring-boot:run "-Dspring-boot.run.arguments=--spring.batch.job.name=interesesJob"
 ./mvnw spring-boot:run "-Dspring-boot.run.arguments=--spring.batch.job.name=cuentasAnualesJob"
 ```
+
+Para `interesesJob`, los hilos y el chunk se pueden ajustar sin recompilar agregando parámetros, por ejemplo: `--batch.intereses.hilos=5 --batch.intereses.chunk=10`.
 
 Cada job usa `RunIdIncrementer`, así que se puede correr las veces que quieras sin que Spring Batch se queje de una instancia ya completada — eso sí, significa que si un job falla a mitad de camino, la próxima corrida no retoma desde ahí, arranca de cero con un `run.id` nuevo. Lo dejamos así a propósito para poder repetir las pruebas libremente; la capacidad de Spring Batch de reanudar un job fallido sigue disponible de fondo (el estado se persiste en MySQL vía `JobRepository`), solo que no la estamos usando con parámetros fijos.
 

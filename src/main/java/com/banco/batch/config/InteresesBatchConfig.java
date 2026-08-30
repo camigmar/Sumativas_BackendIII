@@ -17,6 +17,7 @@ import org.springframework.batch.infrastructure.item.database.builder.JpaItemWri
 import org.springframework.batch.infrastructure.item.file.FlatFileItemReader;
 import org.springframework.batch.infrastructure.item.file.builder.FlatFileItemReaderBuilder;
 import org.springframework.batch.infrastructure.item.support.SynchronizedItemStreamReader;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.io.ClassPathResource;
@@ -66,10 +67,10 @@ public class InteresesBatchConfig {
     }
 
     @Bean
-    public TaskExecutor interesTaskExecutor() {
+    public TaskExecutor interesTaskExecutor(@Value("${batch.intereses.hilos}") int hilos) {
         ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
-        executor.setCorePoolSize(3);
-        executor.setMaxPoolSize(3);
+        executor.setCorePoolSize(hilos);
+        executor.setMaxPoolSize(hilos);
         executor.setThreadNamePrefix("interes-hilo-");
         // Con 3 hilos fijos y chunks de 5, una cola de 10 absorbe picos sin crecer sin límite,
         // acorde al volumen de datos de este proyecto (archivos CSV pequeños).
@@ -96,9 +97,10 @@ public class InteresesBatchConfig {
                              JpaItemWriter<CuentaInteres> interesWriter,
                              TaskExecutor interesTaskExecutor,
                              LoggingSkipListener<CuentaInteres, CuentaInteres> interesSkipListener,
-                             LoggingStepExecutionListener interesStepExecutionListener) {
+                             LoggingStepExecutionListener interesStepExecutionListener,
+                             @Value("${batch.intereses.chunk}") int chunk) {
         return new StepBuilder("interesStep", jobRepository)
-                .<CuentaInteres, CuentaInteres>chunk(5, tx)
+                .<CuentaInteres, CuentaInteres>chunk(chunk, tx)
                 .reader(interesReader)
                 .processor(interesProcessor)
                 .writer(interesWriter)

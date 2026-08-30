@@ -9,7 +9,10 @@ public class TransaccionResultadoDecider implements JobExecutionDecider {
 
     @Override
     public FlowExecutionStatus decide(JobExecution jobExecution, StepExecution stepExecution) {
-        long skipCount = stepExecution.getSkipCount();
+        long skipCount = jobExecution.getStepExecutions().stream()
+                .filter(se -> se.getStepName().startsWith("transaccionStep"))
+                .mapToLong(StepExecution::getSkipCount)
+                .sum();
         if (skipCount == 0) {
             return new FlowExecutionStatus("OK");
         } else if (skipCount <= 5) {

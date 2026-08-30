@@ -1,12 +1,13 @@
 package com.banco.batch.policy;
 
+import java.time.format.DateTimeParseException;
 import org.springframework.batch.core.step.skip.SkipPolicy;
 import org.springframework.batch.infrastructure.item.file.FlatFileParseException;
 
-public class TransaccionSkipPolicy implements SkipPolicy{
+public class CuentaAnualSkipPolicy implements SkipPolicy{
     private final int maxSkips;
 
-    public TransaccionSkipPolicy(int maxSkips){
+    public CuentaAnualSkipPolicy(int maxSkips){
         this.maxSkips = maxSkips;
     }
 
@@ -15,7 +16,7 @@ public class TransaccionSkipPolicy implements SkipPolicy{
         if(skipCount >= maxSkips){
             return false;
         }
-        if(t instanceof FlatFileParseException || t instanceof NumberFormatException){
+        if(t instanceof FlatFileParseException || t instanceof NumberFormatException || t instanceof DateTimeParseException){
             return true;
         }
         return false;

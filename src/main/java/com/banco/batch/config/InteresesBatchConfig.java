@@ -4,6 +4,7 @@ import com.banco.batch.listener.LoggingJobExecutionListener;
 import com.banco.batch.listener.LoggingSkipListener;
 import com.banco.batch.listener.LoggingStepExecutionListener;
 import com.banco.batch.model.CuentaInteres;
+import com.banco.batch.policy.InteresSkipPolicy;
 import com.banco.batch.processor.InteresProcessor;
 import jakarta.persistence.EntityManagerFactory;
 import org.springframework.batch.core.job.Job;
@@ -98,17 +99,18 @@ public class InteresesBatchConfig {
                              TaskExecutor interesTaskExecutor,
                              LoggingSkipListener<CuentaInteres, CuentaInteres> interesSkipListener,
                              LoggingStepExecutionListener interesStepExecutionListener,
-                             @Value("${batch.intereses.chunk}") int chunk) {
+                             @Value("${batch.intereses.chunk}") int chunk,
+                             @Value("${batch.intereses.skip-limite}") int skipLimite,
+                             @Value("${batch.intereses.retry-limite}") int retryLimite) {
         return new StepBuilder("interesStep", jobRepository)
                 .<CuentaInteres, CuentaInteres>chunk(chunk, tx)
                 .reader(interesReader)
                 .processor(interesProcessor)
                 .writer(interesWriter)
                 .faultTolerant()
-                .retryLimit(3)
+                .retryLimit(retryLimite)
                 .retry(TransientDataAccessException.class)
-                .skipLimit(50)
-                .skip(Exception.class)
+                .skipPolicy(new InteresSkipPolicy(skipLimite))
                 .taskExecutor(interesTaskExecutor)
                 .listener(interesSkipListener)
                 .listener(interesStepExecutionListener)

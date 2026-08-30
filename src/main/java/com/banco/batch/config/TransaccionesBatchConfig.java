@@ -104,16 +104,18 @@ public class TransaccionesBatchConfig{
                                 TransaccionProcessor processor,
                                 JpaItemWriter<Transaccion> writer,
                                 LoggingSkipListener<Transaccion, Transaccion> transaccionSkipListener,
-                                LoggingStepExecutionListener transaccionStepExecutionListener) {
+                                LoggingStepExecutionListener transaccionStepExecutionListener,
+                                @Value("${batch.transacciones.skip-limite}") int skipLimite,
+                                @Value("${batch.transacciones.retry-limite}") int retryLimite) {
         return new StepBuilder("transaccionStep", jobRepository)
                 .<Transaccion, Transaccion>chunk(5, tx)
                 .reader(reader)
                 .processor(processor)
                 .writer(writer)
                 .faultTolerant()
-                .retryLimit(3)
+                .retryLimit(retryLimite)
                 .retry(TransientDataAccessException.class)
-                .skipPolicy(new TransaccionSkipPolicy())
+                .skipPolicy(new TransaccionSkipPolicy(skipLimite))
                 .listener(transaccionSkipListener)
                 .listener(transaccionStepExecutionListener)
                 .build();

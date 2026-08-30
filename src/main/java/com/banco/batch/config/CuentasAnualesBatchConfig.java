@@ -5,6 +5,7 @@ import com.banco.batch.listener.LoggingSkipListener;
 import com.banco.batch.listener.LoggingStepExecutionListener;
 import com.banco.batch.model.EstadoCuentaAnual;
 import com.banco.batch.model.MovimientoAnual;
+import com.banco.batch.policy.CuentaAnualSkipPolicy;
 import com.banco.batch.processor.MovimientoProcessor;
 import com.banco.batch.reader.InformeAnualReader;
 import jakarta.persistence.EntityManagerFactory;
@@ -22,6 +23,7 @@ import org.springframework.batch.infrastructure.item.database.builder.JpaItemWri
 import org.springframework.batch.infrastructure.item.file.FlatFileItemReader;
 import org.springframework.batch.infrastructure.item.file.builder.FlatFileItemReaderBuilder;
 import org.springframework.batch.infrastructure.item.support.SynchronizedItemStreamReader;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.io.ClassPathResource;
@@ -108,17 +110,18 @@ public class CuentasAnualesBatchConfig {
                                 JpaItemWriter<MovimientoAnual> movimientoWriter,
                                 TaskExecutor movimientoTaskExecutor,
                                 LoggingSkipListener<MovimientoAnual, MovimientoAnual> movimientoSkipListener,
-                                LoggingStepExecutionListener stepExecutionListener) {
+                                LoggingStepExecutionListener stepExecutionListener,
+                                @Value("${batch.cuentas-anuales.skip-limite}") int skipLimite,
+                                @Value("${batch.cuentas-anuales.retry-limite}") int retryLimite) {
         return new StepBuilder("movimientoStep", jobRepository)
                 .<MovimientoAnual, MovimientoAnual>chunk(5, tx)
                 .reader(movimientoReader)
                 .processor(movimientoProcessor)
                 .writer(movimientoWriter)
                 .faultTolerant()
-                .retryLimit(3)
+                .retryLimit(retryLimite)
                 .retry(TransientDataAccessException.class)
-                .skipLimit(50)
-                .skip(Exception.class)
+                .skipPolicy(new CuentaAnualSkipPolicy(skipLimite))
                 .taskExecutor(movimientoTaskExecutor)
                 .listener(movimientoSkipListener)
                 .listener(stepExecutionListener)

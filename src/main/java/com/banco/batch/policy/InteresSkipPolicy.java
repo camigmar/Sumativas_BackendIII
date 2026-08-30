@@ -3,10 +3,10 @@ package com.banco.batch.policy;
 import org.springframework.batch.core.step.skip.SkipPolicy;
 import org.springframework.batch.infrastructure.item.file.FlatFileParseException;
 
-public class TransaccionSkipPolicy implements SkipPolicy{
+public class InteresSkipPolicy implements SkipPolicy{
     private final int maxSkips;
 
-    public TransaccionSkipPolicy(int maxSkips){
+    public InteresSkipPolicy(int maxSkips){
         this.maxSkips = maxSkips;
     }
 

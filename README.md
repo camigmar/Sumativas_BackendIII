@@ -100,6 +100,58 @@ Para `interesesJob`, los hilos y el chunk se pueden ajustar sin recompilar agreg
 
 Cada job usa `RunIdIncrementer`, así que se puede correr las veces que quieras sin que Spring Batch se queje de una instancia ya completada — eso sí, significa que si un job falla a mitad de camino, la próxima corrida no retoma desde ahí, arranca de cero con un `run.id` nuevo. Lo dejamos así a propósito para poder repetir las pruebas libremente; la capacidad de Spring Batch de reanudar un job fallido sigue disponible de fondo (el estado se persiste en MySQL vía `JobRepository`), solo que no la estamos usando con parámetros fijos.
 
+## BFF Móvil y BFF Cajero
+
+Además del BFF Web, el proyecto expone dos backends adicionales pensados para los otros canales del Banco XYZ, cada uno con el nivel de detalle y las validaciones que le corresponden.
+
+### BFF Móvil (`com.banco.bff.movil`)
+
+Pensado para minimizar el consumo de datos de la app: los DTOs solo traen los campos esenciales (sin el desglose de estado de cuenta anual que sí expone el BFF Web) y el listado de movimientos se acota a los últimos 10.
+
+| Método | Endpoint | Descripción |
+|---|---|---|
+| GET | `/api/movil/cuentas/{cuentaId}` | Datos esenciales de la cuenta: nombre, saldo, tipo |
+| GET | `/api/movil/cuentas/{cuentaId}/movimientos` | Últimos 10 movimientos (fecha, transacción, monto) |
+
+Ejemplo:
+```
+GET /api/movil/cuentas/101
+```
+```json
+{
+  "cuentaId": 101,
+  "nombre": "Juan Pérez",
+  "saldo": 15000.0,
+  "tipo": "ahorro"
+}
+```
+
+### BFF Cajero (`com.banco.bff.cajero`)
+
+Pensado para operaciones críticas de un cajero automático: consulta de saldo y retiro, con validaciones estrictas antes de mover cualquier dinero (monto positivo, cuenta existente, saldo suficiente).
+
+| Método | Endpoint | Descripción |
+|---|---|---|
+| GET | `/api/cajero/cuentas/{cuentaId}/saldo` | Devuelve solo el saldo actual |
+| GET | `/api/cajero/cuentas/{cuentaId}/validar` | Confirma si la cuenta existe (200/404) |
+| POST | `/api/cajero/cuentas/{cuentaId}/retiro` | Retira un monto y descuenta el saldo |
+
+Ejemplo de retiro:
+```
+POST /api/cajero/cuentas/101/retiro
+Content-Type: application/json
+
+{ "monto": 5000 }
+```
+```json
+{
+  "cuentaId": 101,
+  "montoRetirado": 5000.0,
+  "saldoRestante": 10000.0
+}
+```
+Si el saldo no alcanza, responde `409 Conflict` con `{ "mensaje": "Saldo insuficiente para realizar el retiro" }`.
+
 ## Evidencia de ejecución
 
 La evidencia de ejecución (logs y capturas de cada Job corriendo) se entrega en un documento aparte dentro de la carpeta del grupo.

@@ -100,6 +100,10 @@ Para `interesesJob`, los hilos y el chunk se pueden ajustar sin recompilar agreg
 
 Cada job usa `RunIdIncrementer`, así que se puede correr las veces que quieras sin que Spring Batch se queje de una instancia ya completada — eso sí, significa que si un job falla a mitad de camino, la próxima corrida no retoma desde ahí, arranca de cero con un `run.id` nuevo. Lo dejamos así a propósito para poder repetir las pruebas libremente; la capacidad de Spring Batch de reanudar un job fallido sigue disponible de fondo (el estado se persiste en MySQL vía `JobRepository`), solo que no la estamos usando con parámetros fijos.
 
+## Estrategia de implementación del patrón BFF
+
+Elegimos **endpoints personalizados** en vez de backends independientes o delegación a microservicios: el equipo es de una sola persona, no hay microservicios previos que orquestar, y el análisis de compromisos (personalización vs. mantenibilidad) favorece mantener todo en un mismo proyecto Spring Boot, separado por paquete (com.banco.bff.web, com.banco.bff.movil, com.banco.bff.cajero) en vez de por despliegue. Esto nos permite reutilizar directamente los repositorios y entidades del módulo batch sin duplicar código, y mantener un único punto de configuración de seguridad para los 3 canales.
+
 ## BFF Móvil y BFF Cajero
 
 Además del BFF Web, el proyecto expone dos backends adicionales pensados para los otros canales del Banco XYZ, cada uno con el nivel de detalle y las validaciones que le corresponden.
@@ -152,6 +156,33 @@ Content-Type: application/json
 ```
 Si el saldo no alcanza, responde `409 Conflict` con `{ "mensaje": "Saldo insuficiente para realizar el retiro" }`.
 
+## Autenticación y autorización por canal
+
+Cada canal requiere su propio rol para acceder: ROLE_WEB, ROLE_MOVIL y ROLE_CAJERO. La autenticación es vía JWT — el cliente hace login una vez y usa el token en cada request siguiente, sin que el servidor guarde sesión (STATELESS).
+
+POST /api/auth/login recibe username/password y devuelve el token si las credenciales son válidas:
+
+POST /api/auth/login
+Content-Type: application/json
+
+{ "username": "cliente.web", "password": "Clave123!" }
+
+
+```json
+{ "token": "eyJhbGciOiJIUzI1NiJ9..." }
+```
+
+Ese token se envía en cada request al canal correspondiente como header Authorization: Bearer <token>. Spring Security valida el rol contra la ruta: /api/web/** exige ROLE_WEB, /api/movil/** exige ROLE_MOVIL, /api/cajero/** exige ROLE_CAJERO — un token válido de un canal recibe 403 Forbidden si intenta usarse contra otro. DataInitializer crea 3 usuarios de prueba al arrancar (uno por rol, contraseña Clave123!) solo si la tabla usuarios está vacía.
+
+## HTTPS
+
+El servidor corre sobre HTTPS con un certificado autofirmado (keystore.p12, generado con keytool), configurado en application.properties (server.ssl.*). Al no venir de una entidad certificadora reconocida, tanto Postman como los navegadores muestran una advertencia de certificado no confiable al conectarse — comportamiento esperado para un certificado autofirmado en un entorno de desarrollo, no un error.
+
+Para generar tu propio certificado local:
+
+keytool -genkeypair -alias bancoxyz -keyalg RSA -keysize 2048 -storetype PKCS12 -keystore src/main/resources/keystore.p12 -validity 365
+
+
 ## Evidencia de ejecución
 
-La evidencia de ejecución (logs y capturas de cada Job corriendo) se entrega en un documento aparte dentro de la carpeta del grupo.
+La evidencia de ejecución — logs y capturas de los 3 Jobs de batch corriendo, y las pruebas de autenticación/autorización por canal junto con HTTPS — se entrega en un documento Word aparte, incluido en la misma carpeta de esta entrega.

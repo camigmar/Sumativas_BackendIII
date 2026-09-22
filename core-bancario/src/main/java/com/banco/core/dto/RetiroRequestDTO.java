@@ -1,4 +1,4 @@
-package com.banco.bff.cajero.dto;
+package com.banco.core.dto;
 
 public record RetiroRequestDTO(Double monto) {
 }

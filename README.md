@@ -10,7 +10,18 @@ Migramos tres procesos batch legacy del Banco XYZ a Spring Batch: el reporte de 
 - MySQL 8 (vía Docker)
 - Maven
 
-## Estructura del proyecto
+## Módulos del proyecto
+
+El repo pasó de ser una única app Spring Boot a un proyecto Maven multi-módulo. El `pom.xml` de la raíz ahora es un POM padre/agregador (`packaging=pom`) que centraliza las versiones (Spring Boot 4.1.0, Spring Cloud 2025.1.2, Java 17) en `dependencyManagement`, y cada módulo tiene su propio `pom.xml` que hereda de ahí. Este es el primer paso de una migración hacia una arquitectura Controller → Service → Client → Core con los BFF como aplicaciones independientes; por ahora es solo la reestructuración de carpetas, sin lógica nueva.
+
+- **`core-bancario`**: todo el código que antes vivía en la raíz (los 3 Jobs de Spring Batch, los 3 BFF y la seguridad JWT) se movió acá tal cual, sin cambios de lógica. Sigue compilando y funcionando exactamente igual que antes, corre en el puerto 8080. En un paso posterior los BFF van a salir de este módulo hacia sus propias apps.
+- **`bff-web`, `bff-movil`, `bff-cajero`**: esqueletos de las futuras apps Spring Boot independientes de cada canal (puertos 8081, 8082 y 8083 respectivamente). Por ahora solo tienen `spring-boot-starter-web` y una clase `@SpringBootApplication` mínima; todavía no exponen los endpoints reales, que hoy siguen sirviéndose desde `core-bancario`.
+- **`eureka-server`**: Service Discovery (puerto 8761), para que el core y los BFF se registren y se encuentren entre sí en vez de usar URLs fijas.
+- **`config-server`**: Config Server centralizado (puerto 8888), para externalizar la configuración de todos los módulos en un solo lugar.
+
+Estos últimos 5 módulos hoy son esqueletos: compilan y levantan, pero no tienen lógica de negocio todavía. Eso, junto con Resilience4j (Circuit Breaker), se va a ir completando en los próximos pasos.
+
+## Estructura del proyecto (dentro de `core-bancario`)
 
 El código está organizado por responsabilidad dentro de `com.banco.batch`:
 

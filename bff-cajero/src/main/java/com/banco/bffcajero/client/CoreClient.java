@@ -7,6 +7,8 @@ import com.banco.bffcajero.dto.RetiroResponseDTO;
 import com.banco.bffcajero.dto.ValidarCredencialesRequest;
 import com.banco.bffcajero.dto.ValidarCredencialesResponse;
 import com.banco.bffcajero.exception.CoreErrorException;
+import com.banco.bffcajero.exception.CoreNoDisponibleException;
+import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
@@ -23,6 +25,7 @@ public class CoreClient {
         this.restClient = coreRestClient;
     }
 
+    @CircuitBreaker(name = "core", fallbackMethod = "validarCredencialesFallback")
     public Optional<String> validarCredenciales(String username, String password) {
         return restClient.post()
                 .uri("/api/core/auth/validar")
@@ -33,6 +36,11 @@ public class CoreClient {
                         : Optional.empty());
     }
 
+    private Optional<String> validarCredencialesFallback(String username, String password, Throwable t) {
+        throw new CoreNoDisponibleException("No se pudieron validar las credenciales de " + username, t);
+    }
+
+    @CircuitBreaker(name = "core", fallbackMethod = "obtenerCuentaFallback")
     public Optional<CuentaDTO> obtenerCuenta(Long cuentaId) {
         return restClient.get()
                 .uri("/api/core/cuentas/{cuentaId}", cuentaId)
@@ -41,12 +49,22 @@ public class CoreClient {
                         : Optional.empty());
     }
 
+    private Optional<CuentaDTO> obtenerCuentaFallback(Long cuentaId, Throwable t) {
+        throw new CoreNoDisponibleException("No se pudo consultar la cuenta " + cuentaId, t);
+    }
+
+    @CircuitBreaker(name = "core", fallbackMethod = "existeCuentaFallback")
     public boolean existeCuenta(Long cuentaId) {
         return restClient.get()
                 .uri("/api/core/cuentas/{cuentaId}/existe", cuentaId)
                 .exchange((request, response) -> response.getStatusCode().is2xxSuccessful());
     }
 
+    private boolean existeCuentaFallback(Long cuentaId, Throwable t) {
+        throw new CoreNoDisponibleException("No se pudo verificar la existencia de la cuenta " + cuentaId, t);
+    }
+
+    @CircuitBreaker(name = "core", fallbackMethod = "retirarFallback")
     public RetiroResponseDTO retirar(Long cuentaId, RetiroRequestDTO request) {
         try {
             return restClient.post()
@@ -60,5 +78,16 @@ public class CoreClient {
             String mensaje = error != null ? error.mensaje() : ex.getMessage();
             throw new CoreErrorException(ex.getStatusCode().value(), mensaje);
         }
+    }
+
+    // ignore-exceptions solo evita que CoreErrorException cuente como falla del circuito,
+    // pero el fallback se ejecuta igual. Resilience4j elige el fallback con el tipo de
+    // excepcion mas especifico, asi que este relanza el error de negocio (409, 404...) intacto.
+    private RetiroResponseDTO retirarFallback(Long cuentaId, RetiroRequestDTO request, CoreErrorException ex) {
+        throw ex;
+    }
+
+    private RetiroResponseDTO retirarFallback(Long cuentaId, RetiroRequestDTO request, Throwable t) {
+        throw new CoreNoDisponibleException("No se pudo realizar el retiro en la cuenta " + cuentaId, t);
     }
 }

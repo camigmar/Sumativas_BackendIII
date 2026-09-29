@@ -4,6 +4,8 @@ import com.banco.bffmovil.dto.CuentaDTO;
 import com.banco.bffmovil.dto.MovimientoDTO;
 import com.banco.bffmovil.dto.ValidarCredencialesRequest;
 import com.banco.bffmovil.dto.ValidarCredencialesResponse;
+import com.banco.bffmovil.exception.CoreNoDisponibleException;
+import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
@@ -21,6 +23,7 @@ public class CoreClient {
         this.restClient = coreRestClient;
     }
 
+    @CircuitBreaker(name = "core", fallbackMethod = "validarCredencialesFallback")
     public Optional<String> validarCredenciales(String username, String password) {
         return restClient.post()
                 .uri("/api/core/auth/validar")
@@ -31,6 +34,11 @@ public class CoreClient {
                         : Optional.empty());
     }
 
+    private Optional<String> validarCredencialesFallback(String username, String password, Throwable t) {
+        throw new CoreNoDisponibleException("No se pudieron validar las credenciales de " + username, t);
+    }
+
+    @CircuitBreaker(name = "core", fallbackMethod = "obtenerCuentaFallback")
     public Optional<CuentaDTO> obtenerCuenta(Long cuentaId) {
         return restClient.get()
                 .uri("/api/core/cuentas/{cuentaId}", cuentaId)
@@ -39,17 +47,31 @@ public class CoreClient {
                         : Optional.empty());
     }
 
+    private Optional<CuentaDTO> obtenerCuentaFallback(Long cuentaId, Throwable t) {
+        throw new CoreNoDisponibleException("No se pudo consultar la cuenta " + cuentaId, t);
+    }
+
+    @CircuitBreaker(name = "core", fallbackMethod = "existeCuentaFallback")
     public boolean existeCuenta(Long cuentaId) {
         return restClient.get()
                 .uri("/api/core/cuentas/{cuentaId}/existe", cuentaId)
                 .exchange((request, response) -> response.getStatusCode().is2xxSuccessful());
     }
 
+    private boolean existeCuentaFallback(Long cuentaId, Throwable t) {
+        throw new CoreNoDisponibleException("No se pudo verificar la existencia de la cuenta " + cuentaId, t);
+    }
+
+    @CircuitBreaker(name = "core", fallbackMethod = "obtenerUltimosMovimientosFallback")
     public List<MovimientoDTO> obtenerUltimosMovimientos(Long cuentaId, int limite) {
         return restClient.get()
                 .uri("/api/core/cuentas/{cuentaId}/movimientos?limite={limite}", cuentaId, limite)
                 .retrieve()
                 .body(new ParameterizedTypeReference<List<MovimientoDTO>>() {
                 });
+    }
+
+    private List<MovimientoDTO> obtenerUltimosMovimientosFallback(Long cuentaId, int limite, Throwable t) {
+        throw new CoreNoDisponibleException("No se pudieron consultar los ultimos movimientos de la cuenta " + cuentaId, t);
     }
 }

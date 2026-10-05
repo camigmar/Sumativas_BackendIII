@@ -4,11 +4,14 @@ import com.banco.batch.model.CuentaInteres;
 import com.banco.batch.model.EstadoCuentaAnual;
 import com.banco.batch.repository.CuentaInteresRepository;
 import com.banco.batch.repository.EstadoCuentaAnualRepository;
+import com.banco.core.event.RetiroEventPublisher;
+import com.banco.core.event.RetiroRealizadoEvent;
 import com.banco.core.exception.CuentaNoEncontradaException;
 import com.banco.core.exception.MontoInvalidoException;
 import com.banco.core.exception.SaldoInsuficienteException;
 import org.springframework.stereotype.Service;
 
+import java.time.LocalDateTime;
 import java.util.Optional;
 
 @Service
@@ -16,11 +19,14 @@ public class CuentaService {
 
     private final CuentaInteresRepository cuentaInteresRepository;
     private final EstadoCuentaAnualRepository estadoCuentaAnualRepository;
+    private final RetiroEventPublisher retiroEventPublisher;
 
     public CuentaService(CuentaInteresRepository cuentaInteresRepository,
-                          EstadoCuentaAnualRepository estadoCuentaAnualRepository) {
+                          EstadoCuentaAnualRepository estadoCuentaAnualRepository,
+                          RetiroEventPublisher retiroEventPublisher) {
         this.cuentaInteresRepository = cuentaInteresRepository;
         this.estadoCuentaAnualRepository = estadoCuentaAnualRepository;
+        this.retiroEventPublisher = retiroEventPublisher;
     }
 
     public Optional<CuentaInteres> obtenerCuenta(Long cuentaId) {
@@ -50,6 +56,8 @@ public class CuentaService {
         double nuevoSaldo = cuenta.getSaldo() - monto;
         cuenta.setSaldo(nuevoSaldo);
         cuentaInteresRepository.save(cuenta);
+        retiroEventPublisher.publicar(
+                new RetiroRealizadoEvent(cuentaId, monto, nuevoSaldo, LocalDateTime.now().toString()));
 
         return nuevoSaldo;
     }

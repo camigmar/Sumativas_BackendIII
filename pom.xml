@@ -27,6 +27,7 @@
 		<module>bff-web</module>
 		<module>bff-movil</module>
 		<module>bff-cajero</module>
+		<module>servicio-auditoria</module>
 	</modules>
 
 	<dependencyManagement>

@@ -4,8 +4,6 @@ import com.banco.bffcajero.dto.CuentaDTO;
 import com.banco.bffcajero.dto.ErrorDTO;
 import com.banco.bffcajero.dto.RetiroRequestDTO;
 import com.banco.bffcajero.dto.RetiroResponseDTO;
-import com.banco.bffcajero.dto.ValidarCredencialesRequest;
-import com.banco.bffcajero.dto.ValidarCredencialesResponse;
 import com.banco.bffcajero.exception.CoreErrorException;
 import com.banco.bffcajero.exception.CoreNoDisponibleException;
 import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
@@ -23,21 +21,6 @@ public class CoreClient {
 
     public CoreClient(RestClient coreRestClient) {
         this.restClient = coreRestClient;
-    }
-
-    @CircuitBreaker(name = "core", fallbackMethod = "validarCredencialesFallback")
-    public Optional<String> validarCredenciales(String username, String password) {
-        return restClient.post()
-                .uri("/api/core/auth/validar")
-                .contentType(MediaType.APPLICATION_JSON)
-                .body(new ValidarCredencialesRequest(username, password))
-                .exchange((request, response) -> response.getStatusCode().is2xxSuccessful()
-                        ? Optional.of(response.bodyTo(ValidarCredencialesResponse.class).rol())
-                        : Optional.empty());
-    }
-
-    private Optional<String> validarCredencialesFallback(String username, String password, Throwable t) {
-        throw new CoreNoDisponibleException("No se pudieron validar las credenciales de " + username, t);
     }
 
     @CircuitBreaker(name = "core", fallbackMethod = "obtenerCuentaFallback")

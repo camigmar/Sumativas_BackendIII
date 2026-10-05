@@ -2,12 +2,9 @@ package com.banco.bffmovil.client;
 
 import com.banco.bffmovil.dto.CuentaDTO;
 import com.banco.bffmovil.dto.MovimientoDTO;
-import com.banco.bffmovil.dto.ValidarCredencialesRequest;
-import com.banco.bffmovil.dto.ValidarCredencialesResponse;
 import com.banco.bffmovil.exception.CoreNoDisponibleException;
 import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
 import org.springframework.core.ParameterizedTypeReference;
-import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 
@@ -21,21 +18,6 @@ public class CoreClient {
 
     public CoreClient(RestClient coreRestClient) {
         this.restClient = coreRestClient;
-    }
-
-    @CircuitBreaker(name = "core", fallbackMethod = "validarCredencialesFallback")
-    public Optional<String> validarCredenciales(String username, String password) {
-        return restClient.post()
-                .uri("/api/core/auth/validar")
-                .contentType(MediaType.APPLICATION_JSON)
-                .body(new ValidarCredencialesRequest(username, password))
-                .exchange((request, response) -> response.getStatusCode().is2xxSuccessful()
-                        ? Optional.of(response.bodyTo(ValidarCredencialesResponse.class).rol())
-                        : Optional.empty());
-    }
-
-    private Optional<String> validarCredencialesFallback(String username, String password, Throwable t) {
-        throw new CoreNoDisponibleException("No se pudieron validar las credenciales de " + username, t);
     }
 
     @CircuitBreaker(name = "core", fallbackMethod = "obtenerCuentaFallback")

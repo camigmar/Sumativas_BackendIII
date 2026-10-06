@@ -8,3 +8,5 @@ target/
 *.log
 HELP.md
 .mvn/wrapper/maven-wrapper.jar
+db/
+docker-compose.yaml

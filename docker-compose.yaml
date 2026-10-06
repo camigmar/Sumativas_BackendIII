@@ -1,0 +1,253 @@
+name: banco-xyz
+
+# Orden de arranque (depends_on + healthcheck):
+#   1. mysql, kafka, config-server y eureka-server (infraestructura, sin dependencias entre si)
+#   2. auth-server y servicio-auditoria
+#   3. core-bancario (necesita config-server, eureka-server, mysql y kafka sanos)
+#   4. bff-web, bff-movil y bff-cajero (necesitan ademas auth-server y core-bancario sanos)
+#
+# Dentro de la red de compose cada servicio se alcanza por su nombre, no por localhost.
+# Los application.properties leen CONFIG_SERVER_URL y EUREKA_URL (con localhost por defecto),
+# asi que aqui se definen con los nombres de los servicios. El resto de variables sobrescribe
+# propiedades directamente por relaxed binding (SPRING_DATASOURCE_URL -> spring.datasource.url).
+
+services:
+
+  mysql:
+    image: mysql:8
+    environment:
+      # Mismo valor que cifra el Config Server para core-bancario; limitacion conocida, entorno de desarrollo.
+      MYSQL_ROOT_PASSWORD: NuevaClave123
+      MYSQL_DATABASE: banco_xyz
+    volumes:
+      - mysql-data:/var/lib/mysql
+      # Los scripts de este directorio solo se ejecutan la primera vez, con el volumen vacio.
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "3307:3306"
+    healthcheck:
+      # Por TCP (127.0.0.1) y no por socket: mientras carga el dump MySQL solo escucha por socket,
+      # asi el servicio queda sano recien cuando termino la inicializacion.
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  kafka:
+    image: apache/kafka:latest
+    # KRaft de un solo nodo: el mismo proceso es broker y controller. Solo accesible dentro de la red.
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_HEAP_OPTS: -Xmx512m -Xms256m
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  config-server:
+    image: banco/config-server:latest
+    build:
+      context: .
+      dockerfile: config-server/Dockerfile
+    restart: on-failure
+    environment:
+      JAVA_TOOL_OPTIONS: -Xmx256m
+    ports:
+      - "8888:8888"
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/127.0.0.1/8888'"]
+      interval: 10s
+      retries: 10
+      start_period: 40s
+
+  eureka-server:
+    image: banco/eureka-server:latest
+    build:
+      context: .
+      dockerfile: eureka-server/Dockerfile
+    restart: on-failure
+    environment:
+      JAVA_TOOL_OPTIONS: -Xmx256m
+    ports:
+      - "8761:8761"
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/127.0.0.1/8761'"]
+      interval: 10s
+      retries: 10
+      start_period: 40s
+
+  auth-server:
+    image: banco/auth-server:latest
+    build:
+      context: .
+      dockerfile: auth-server/Dockerfile
+    restart: on-failure
+    depends_on:
+      config-server:
+        condition: service_healthy
+    environment:
+      JAVA_TOOL_OPTIONS: -Xmx256m
+      # application.properties usa configserver:${CONFIG_SERVER_URL:http://localhost:8888}.
+      CONFIG_SERVER_URL: http://config-server:8888
+    ports:
+      - "9000:9000"
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/127.0.0.1/9000'"]
+      interval: 10s
+      retries: 10
+      start_period: 40s
+
+  core-bancario:
+    image: banco/core-bancario:latest
+    build:
+      context: .
+      dockerfile: core-bancario/Dockerfile
+    restart: on-failure
+    # Sin puerto publicado: la API interna de Core no tiene autenticacion, asi que solo se
+    # alcanza dentro de la red de compose (los BFF la encuentran via Eureka).
+    depends_on:
+      config-server:
+        condition: service_healthy
+      eureka-server:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    environment:
+      JAVA_TOOL_OPTIONS: -Xmx384m
+      CONFIG_SERVER_URL: http://config-server:8888
+      EUREKA_URL: http://eureka-server:8761/eureka/
+      # Registra la IP del contenedor en Eureka en vez de su hostname interno.
+      EUREKA_INSTANCE_PREFER_IP_ADDRESS: "true"
+      SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/banco_xyz?createDatabaseIfNotExists=true
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/127.0.0.1/8080'"]
+      interval: 10s
+      retries: 10
+      start_period: 40s
+
+  bff-web:
+    image: banco/bff-web:latest
+    build:
+      context: .
+      dockerfile: bff-web/Dockerfile
+    restart: on-failure
+    depends_on:
+      config-server:
+        condition: service_healthy
+      eureka-server:
+        condition: service_healthy
+      auth-server:
+        condition: service_healthy
+      core-bancario:
+        condition: service_healthy
+    environment:
+      JAVA_TOOL_OPTIONS: -Xmx256m
+      CONFIG_SERVER_URL: http://config-server:8888
+      EUREKA_URL: http://eureka-server:8761/eureka/
+      EUREKA_INSTANCE_PREFER_IP_ADDRESS: "true"
+      # Las claves publicas para validar los tokens se descargan de auth-server dentro de la red.
+      SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_JWKSETURI: http://auth-server:9000/oauth2/jwks
+    ports:
+      - "8081:8081"
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/127.0.0.1/8081'"]
+      interval: 10s
+      retries: 10
+      start_period: 40s
+
+  bff-movil:
+    image: banco/bff-movil:latest
+    build:
+      context: .
+      dockerfile: bff-movil/Dockerfile
+    restart: on-failure
+    depends_on:
+      config-server:
+        condition: service_healthy
+      eureka-server:
+        condition: service_healthy
+      auth-server:
+        condition: service_healthy
+      core-bancario:
+        condition: service_healthy
+    environment:
+      JAVA_TOOL_OPTIONS: -Xmx256m
+      CONFIG_SERVER_URL: http://config-server:8888
+      EUREKA_URL: http://eureka-server:8761/eureka/
+      EUREKA_INSTANCE_PREFER_IP_ADDRESS: "true"
+      SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_JWKSETURI: http://auth-server:9000/oauth2/jwks
+    ports:
+      - "8082:8082"
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/127.0.0.1/8082'"]
+      interval: 10s
+      retries: 10
+      start_period: 40s
+
+  bff-cajero:
+    image: banco/bff-cajero:latest
+    build:
+      context: .
+      dockerfile: bff-cajero/Dockerfile
+    restart: on-failure
+    depends_on:
+      config-server:
+        condition: service_healthy
+      eureka-server:
+        condition: service_healthy
+      auth-server:
+        condition: service_healthy
+      core-bancario:
+        condition: service_healthy
+    environment:
+      JAVA_TOOL_OPTIONS: -Xmx256m
+      CONFIG_SERVER_URL: http://config-server:8888
+      EUREKA_URL: http://eureka-server:8761/eureka/
+      EUREKA_INSTANCE_PREFER_IP_ADDRESS: "true"
+      SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_JWKSETURI: http://auth-server:9000/oauth2/jwks
+    ports:
+      - "8083:8083"
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/127.0.0.1/8083'"]
+      interval: 10s
+      retries: 10
+      start_period: 40s
+
+  servicio-auditoria:
+    image: banco/servicio-auditoria:latest
+    build:
+      context: .
+      dockerfile: servicio-auditoria/Dockerfile
+    restart: on-failure
+    # Sin puerto publicado ni container_name para poder escalarlo con --scale.
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      JAVA_TOOL_OPTIONS: -Xmx256m
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/127.0.0.1/8084'"]
+      interval: 10s
+      retries: 10
+      start_period: 40s
+
+volumes:
+  mysql-data:

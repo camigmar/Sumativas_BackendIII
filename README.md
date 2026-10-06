@@ -1,199 +1,218 @@
-# Migración de Procesos Batch – Banco XYZ
+# Banco XYZ – Microservicios con Spring Cloud
 
-Migramos tres procesos batch legacy del Banco XYZ a Spring Batch: el reporte de transacciones diarias, el cálculo de intereses mensuales y la generación de estados de cuenta anuales. Los datos de origen (con los errores típicos de un sistema legacy: montos en cero, saldos vacíos, edades fuera de rango, duplicados) vienen de [bank_legacy_data](https://github.com/KariVillagran/bank_legacy_data).
+## 1. Objetivo
 
-## Tecnologías
+Sistema bancario de microservicios para el Banco XYZ: un **core bancario** que concentra los datos y las operaciones de las cuentas, y **tres BFF (Backend for Frontend)**, uno por canal (web, móvil y cajero automático), que adaptan esas operaciones a lo que necesita cada canal. La plataforma usa Spring Cloud para la configuración centralizada (Config Server), el descubrimiento de servicios (Eureka) y la resiliencia (Resilience4j), OAuth2 para la seguridad, Kafka para la mensajería asíncrona y Docker Compose para levantar todo el sistema.
 
-- Java 17 (compila también con JDK 21/24, el bytecode target queda en 17)
-- Spring Boot 4.1.0 + Spring Batch 6.0.4
-- Spring Data JPA + Hibernate
-- MySQL 8 (vía Docker)
-- Maven
+Tecnologías: Java 17, Spring Boot 4.1.0, Spring Cloud 2025.1.2, Spring Security 7 (Authorization Server y Resource Server), Spring Batch, Spring Kafka, MySQL 8, Apache Kafka (KRaft), Maven multi-módulo y Docker.
 
-## Módulos del proyecto
+## 2. Arquitectura y estructura del código
 
-El repo pasó de ser una única app Spring Boot a un proyecto Maven multi-módulo. El `pom.xml` de la raíz ahora es un POM padre/agregador (`packaging=pom`) que centraliza las versiones (Spring Boot 4.1.0, Spring Cloud 2025.1.2, Java 17) en `dependencyManagement`, y cada módulo tiene su propio `pom.xml` que hereda de ahí. Este es el primer paso de una migración hacia una arquitectura Controller → Service → Client → Core con los BFF como aplicaciones independientes; por ahora es solo la reestructuración de carpetas, sin lógica nueva.
+El `pom.xml` de la raíz es el POM padre/agregador: centraliza las versiones (Spring Boot, Spring Cloud, Java 17) y declara los 8 módulos, cada uno con su propio `pom.xml`:
 
-- **`core-bancario`**: todo el código que antes vivía en la raíz (los 3 Jobs de Spring Batch, los 3 BFF y la seguridad JWT) se movió acá tal cual, sin cambios de lógica. Sigue compilando y funcionando exactamente igual que antes, corre en el puerto 8080. En un paso posterior los BFF van a salir de este módulo hacia sus propias apps.
-- **`bff-web`, `bff-movil`, `bff-cajero`**: esqueletos de las futuras apps Spring Boot independientes de cada canal (puertos 8081, 8082 y 8083 respectivamente). Por ahora solo tienen `spring-boot-starter-web` y una clase `@SpringBootApplication` mínima; todavía no exponen los endpoints reales, que hoy siguen sirviéndose desde `core-bancario`.
-- **`eureka-server`**: Service Discovery (puerto 8761), para que el core y los BFF se registren y se encuentren entre sí en vez de usar URLs fijas.
-- **`config-server`**: Config Server centralizado (puerto 8888), para externalizar la configuración de todos los módulos en un solo lugar.
-
-Estos últimos 5 módulos hoy son esqueletos: compilan y levantan, pero no tienen lógica de negocio todavía. Eso, junto con Resilience4j (Circuit Breaker), se va a ir completando en los próximos pasos.
-
-## Estructura del proyecto (dentro de `core-bancario`)
-
-El código está organizado por responsabilidad dentro de `com.banco.batch`:
-
-- `model`: las entidades JPA (Transaccion, CuentaInteres, MovimientoAnual, EstadoCuentaAnual).
-- `processor`: el ItemProcessor de cada job, donde vive la validación y transformación de datos.
-- `reader`: el reader custom que arma el informe agregado de cuentas anuales.
-- `policy`: los SkipPolicy custom de cada job (`TransaccionSkipPolicy`, `InteresSkipPolicy`, `CuentaAnualSkipPolicy`), cada uno con su propio criterio de qué excepciones perdonar.
-- `partition`: el `Partitioner` custom que reparte `transaccionesJob` en particiones por rango de filas.
-- `decider`: el JobExecutionDecider del job de transacciones.
-- `listener`: los listeners que loguean skips, steps y jobs.
-- `config`: la configuración de cada Job (reader, processor, writer, steps, paralelismo).
-
-Los recursos (`application.properties` y los CSV de entrada) están en `src/main/resources`.
-
-## Los 3 Jobs
-
-Cada proceso legacy quedó como un Job independiente con su propio Reader, Processor y Writer.
-
-`transaccionesJob` lee `transacciones.csv` con `TransaccionProcessor` y descarta las filas con monto nulo o en cero — por ejemplo, la fila `id=4` (monto 0) no pasa, mientras que la `id=3` (monto -200) sí, porque un débito negativo es un dato válido, no un error. El resultado se persiste en la tabla `transacciones` a través de un `JpaItemWriter`.
-
-`interesesJob` lee `intereses.csv` con `InteresProcessor`, que descarta cuentas con saldo nulo/cero/negativo, edades fuera de 18-100 años, tipo de cuenta desconocido o registros duplicados. La cuenta `104` se cae por tener saldo 0, y la `106` por ser un duplicado exacto de la `101` (mismo nombre, saldo, edad y tipo). Las que pasan reciben su interés según el tipo de cuenta (ahorro 2%, préstamo 5%, hipoteca 3%) y quedan en `cuentas_interes`.
-
-`cuentasAnualesJob` tiene dos steps. `movimientoStep` lee `cuentas_anuales.csv` con `MovimientoProcessor`, tolera fechas en dos formatos distintos y descarta movimientos sin descripción/tipo o con monto en cero (como la fila de la cuenta `107`), guardando lo válido en `movimientos_anuales`. `informeAnualStep` no toca el CSV: usa un reader propio (`InformeAnualReader`) que agrupa por cuenta los movimientos ya guardados y arma el resumen anual en `estados_cuenta_anual`.
-
-## Escalamiento y procesamiento paralelo
-
-Elegimos dos técnicas de escalado distintas a propósito, para poder comparar sus resultados sobre datos reales.
-
-`transaccionStep` usa particiones. Un `TransaccionPartitioner` divide el CSV en 3 rangos de filas (gridSize 3) y un `TaskExecutorPartitionHandler` corre cada rango como una ejecución de step independiente, en su propio hilo. Cada partición tiene su propio `FlatFileItemReader` (`@StepScope`, con `linesToSkip`/`maxItemCount` según su rango), así que a diferencia del multithreading no hay un reader compartido que sincronizar. Con las 10 filas de `transacciones.csv` el reparto quedó 4-3-3, con las 3 particiones corriendo en paralelo.
-
-`interesStep` sigue con multithreading, pero ahora la cantidad de hilos y el chunk son configurables sin recompilar (`batch.intereses.hilos` y `batch.intereses.chunk` en `application.properties`, o por línea de comandos). Probamos el mismo dataset con 3 configuraciones distintas: con 1 hilo y chunk 5 el job tardó 543ms, con 3 hilos y el mismo chunk bajó a 269ms, y con 5 hilos y chunk 10 llegó a 240ms. La tendencia es clara: más hilos, menos tiempo. El valor por defecto en `application.properties` se actualizó a 5 hilos/chunk 10, la configuración más rápida encontrada en la comparación. `transaccionStep` y `movimientoStep` no se modificaron: el primero no mostró una diferencia real entre configuraciones con un CSV tan chico, y el segundo no fue parte de esta comparación, así que no había evidencia propia para justificar un cambio ahí.
-
-`movimientoStep` (dentro de `cuentasAnualesJob`) sigue con multithreading fijo (3 hilos, `SynchronizedItemStreamReader`), sin cambios, no era parte de esta comparación. `informeAnualStep` sigue fuera de cualquier esquema paralelo por la misma razón de siempre: es una agregación JPQL sobre datos ya persistidos.
-
-## Tolerancia a fallos
-
-Usamos dos mecanismos distintos, para dos tipos de error distintos:
-
-- **SkipPolicy** (omisión de datos inválidos): ahora los 3 Jobs tienen su propia policy en vez de perdonar cualquier `Exception`. `TransaccionSkipPolicy` e `InteresSkipPolicy` solo perdonan `FlatFileParseException` y `NumberFormatException`; `CuentaAnualSkipPolicy` agrega también `DateTimeParseException`, por los dos formatos de fecha que acepta el CSV de movimientos. El límite de omisiones de cada Job es configurable (`batch.transacciones.skip-limite`, `batch.intereses.skip-limite`, `batch.cuentas-anuales.skip-limite`), 20 por defecto en los tres.
-- **RetryPolicy** (fallos transitorios de infraestructura): los tres steps reintentan ante un `TransientDataAccessException` (por ejemplo, un deadlock momentáneo de MySQL), con el límite de reintentos también externalizado (`batch.*.retry-limite`, 3 por defecto). A diferencia del skip, esto no descarta el dato, reintenta la misma operación porque el error no depende del contenido del registro.
-
-## Control de finalización
-
-`transaccionesJob` termina de forma distinta según cuántos registros se saltearon en `transaccionStep`, a través de un `JobExecutionDecider` (`TransaccionResultadoDecider`):
-
-Como `transaccionStep` ahora corre particionado, el decider no lee el `skipCount` de un solo step: suma el de todas las ejecuciones cuyo nombre empieza con `transaccionStep` (las 3 particiones), para no perder de vista omisiones que ocurran en cualquiera de ellas.
-
-- 0 omisiones → el job termina normal (`OK`).
-- 1 a 5 omisiones → termina con advertencia (`COMPLETED WITH WARNINGS`).
-- Más de 5 omisiones → el job se marca como fallido (`CRITICO`), para forzar una revisión manual del archivo fuente.
-
-No implementamos un reintento automático de todo el step (como en algunos ejemplos de la guía) porque acá el origen es un CSV estático: si el step falla por datos malos, correrlo de nuevo produce el mismo resultado, no es un fallo transitorio.
-
-## Listeners y logging
-
-Cada step de lectura tiene un `SkipListener` que registra en log (nivel WARN) cada registro que se descarta y por qué, y un `StepExecutionListener` que loguea al terminar el step cuántos registros se leyeron, escribieron y saltaron, y cuánto tardó. Cada Job tiene además un `JobExecutionListener` que loguea el inicio y el resultado final. Esto es lo que revisamos para confirmar qué se leyó, qué se transformó y qué quedó persistido en cada corrida.
-
-## Cómo ejecutar
-
-### Prerrequisitos
-- Java 17 (o superior; el proyecto compila con JDK 21/24 también)
-- Docker
-
-### 1. Levantar la base de datos
-
-```
-docker run --name banco-mysql -e MYSQL_ROOT_PASSWORD=NuevaClave123 -e MYSQL_DATABASE=banco_xyz -p 3306:3306 -d mysql:8
-```
-
-Si el contenedor ya existe, alcanza con `docker start banco-mysql`. La configuración de conexión está en `src/main/resources/application.properties` (usuario `root`, misma contraseña que arriba, base `banco_xyz`); las tablas se crean solas (`spring.jpa.hibernate.ddl-auto=update`).
-
-### 2. Compilar
-
-```
-./mvnw clean install
-```
-
-### 3. Ejecutar cada Job
-
-```
-./mvnw spring-boot:run "-Dspring-boot.run.arguments=--spring.batch.job.name=transaccionesJob"
-./mvnw spring-boot:run "-Dspring-boot.run.arguments=--spring.batch.job.name=interesesJob"
-./mvnw spring-boot:run "-Dspring-boot.run.arguments=--spring.batch.job.name=cuentasAnualesJob"
-```
-
-Para `interesesJob`, los hilos y el chunk se pueden ajustar sin recompilar agregando parámetros, por ejemplo: `--batch.intereses.hilos=5 --batch.intereses.chunk=10`.
-
-Cada job usa `RunIdIncrementer`, así que se puede correr las veces que quieras sin que Spring Batch se queje de una instancia ya completada — eso sí, significa que si un job falla a mitad de camino, la próxima corrida no retoma desde ahí, arranca de cero con un `run.id` nuevo. Lo dejamos así a propósito para poder repetir las pruebas libremente; la capacidad de Spring Batch de reanudar un job fallido sigue disponible de fondo (el estado se persiste en MySQL vía `JobRepository`), solo que no la estamos usando con parámetros fijos.
-
-## Estrategia de implementación del patrón BFF
-
-Elegimos **endpoints personalizados** en vez de backends independientes o delegación a microservicios: el equipo es de una sola persona, no hay microservicios previos que orquestar, y el análisis de compromisos (personalización vs. mantenibilidad) favorece mantener todo en un mismo proyecto Spring Boot, separado por paquete (com.banco.bff.web, com.banco.bff.movil, com.banco.bff.cajero) en vez de por despliegue. Esto nos permite reutilizar directamente los repositorios y entidades del módulo batch sin duplicar código, y mantener un único punto de configuración de seguridad para los 3 canales.
-
-## BFF Móvil y BFF Cajero
-
-Además del BFF Web, el proyecto expone dos backends adicionales pensados para los otros canales del Banco XYZ, cada uno con el nivel de detalle y las validaciones que le corresponden.
-
-### BFF Móvil (`com.banco.bff.movil`)
-
-Pensado para minimizar el consumo de datos de la app: los DTOs solo traen los campos esenciales (sin el desglose de estado de cuenta anual que sí expone el BFF Web) y el listado de movimientos se acota a los últimos 10.
-
-| Método | Endpoint | Descripción |
+| Módulo | Puerto | Rol |
 |---|---|---|
-| GET | `/api/movil/cuentas/{cuentaId}` | Datos esenciales de la cuenta: nombre, saldo, tipo |
-| GET | `/api/movil/cuentas/{cuentaId}/movimientos` | Últimos 10 movimientos (fecha, transacción, monto) |
+| `config-server` | 8888 | Configuración centralizada; sirve los secretos cifrados (`{cipher}`) de `config-repo/` ya descifrados. |
+| `eureka-server` | 8761 | Service Discovery: core y BFF se registran y se encuentran por nombre lógico. |
+| `auth-server` | 9000 | Authorization Server OAuth2: emite tokens JWT con el flujo `client_credentials`. |
+| `core-bancario` | 8080 | API interna de cuentas, transacciones y retiros (MySQL); publica eventos en Kafka. Contiene también los jobs batch. |
+| `bff-web` | 8081 | BFF del canal web (HTTPS): cuenta con estado anual, movimientos y transacciones. |
+| `bff-movil` | 8082 | BFF del canal móvil (HTTPS): datos esenciales de la cuenta y últimos 10 movimientos. |
+| `bff-cajero` | 8083 | BFF del cajero (HTTPS): saldo, validación de cuenta y retiro. |
+| `servicio-auditoria` | 8084 | Consume los eventos de retiro desde Kafka y los registra en el log. |
 
-Ejemplo:
+Docker Compose agrega dos servicios de infraestructura: `mysql` y `kafka`.
+
+```mermaid
+flowchart LR
+    C[Cliente del canal] -- "1. client_credentials" --> AS[auth-server :9000]
+    AS -- "2. access token JWT" --> C
+    C -- "3. HTTPS + Bearer token" --> BFF["bff-web / bff-movil / bff-cajero"]
+    BFF -. "valida firma via JWKS" .-> AS
+    BFF -- "4. http://core-bancario (Eureka + LoadBalancer, Circuit Breaker)" --> CORE[core-bancario :8080]
+    CORE --> DB[(MySQL)]
+    CORE -- "RetiroRealizado" --> K[[Kafka: retiros-realizados]]
+    K --> AUD[servicio-auditoria]
+    CS[config-server :8888] -. configuracion .-> AS & BFF & CORE
+    EU[eureka-server :8761] -. registro .-> BFF & CORE
 ```
-GET /api/movil/cuentas/101
-```
-```json
-{
-  "cuentaId": 101,
-  "nombre": "Juan Pérez",
-  "saldo": 15000.0,
-  "tipo": "ahorro"
-}
-```
 
-### BFF Cajero (`com.banco.bff.cajero`)
+Cada BFF sigue la estructura `controller → service → client`: el `CoreClient` llama a la API interna de Core (`/api/core/**`) usando el nombre lógico `core-bancario`, que Eureka y Spring Cloud LoadBalancer resuelven a una instancia real.
 
-Pensado para operaciones críticas de un cajero automático: consulta de saldo y retiro, con validaciones estrictas antes de mover cualquier dinero (monto positivo, cuenta existente, saldo suficiente).
+### Endpoints de los BFF
 
-| Método | Endpoint | Descripción |
+| BFF | Método | Endpoint |
 |---|---|---|
-| GET | `/api/cajero/cuentas/{cuentaId}/saldo` | Devuelve solo el saldo actual |
-| GET | `/api/cajero/cuentas/{cuentaId}/validar` | Confirma si la cuenta existe (200/404) |
-| POST | `/api/cajero/cuentas/{cuentaId}/retiro` | Retira un monto y descuenta el saldo |
+| web | GET | `/api/web/cuentas/{cuentaId}`, `/api/web/cuentas/{cuentaId}/movimientos` |
+| web | GET | `/api/web/transacciones`, `/api/web/transacciones/{id}` |
+| móvil | GET | `/api/movil/cuentas/{cuentaId}`, `/api/movil/cuentas/{cuentaId}/movimientos` |
+| cajero | GET | `/api/cajero/cuentas/{cuentaId}/saldo`, `/api/cajero/cuentas/{cuentaId}/validar` |
+| cajero | POST | `/api/cajero/cuentas/{cuentaId}/retiro` con cuerpo `{ "monto": 500 }` |
 
-Ejemplo de retiro:
+Un retiro con saldo insuficiente responde `409 Conflict` con `{ "mensaje": "Saldo insuficiente para realizar el retiro" }`.
+
+### Procesos batch (core-bancario)
+
+`core-bancario` conserva los tres jobs de Spring Batch que migraron los procesos legacy (`transaccionesJob`, `interesesJob` y `cuentasAnualesJob`, con particionamiento, multithreading, SkipPolicy y RetryPolicy). Sus resultados son los datos de `db/init/01-datos.sql`. Con `spring.batch.job.enabled=false` los jobs no se ejecutan al arrancar el servicio.
+
+## 3. Cómo ejecutar
+
+### Requisitos
+
+- Docker Desktop (con Docker Compose v2).
+- Puertos libres en el host: 3307, 8081, 8082, 8083, 8761, 8888 y 9000.
+
+### Levantar el sistema
+
+Desde la raíz del repositorio:
+
 ```
-POST /api/cajero/cuentas/101/retiro
-Content-Type: application/json
-
-{ "monto": 5000 }
-```
-```json
-{
-  "cuentaId": 101,
-  "montoRetirado": 5000.0,
-  "saldoRestante": 10000.0
-}
-```
-Si el saldo no alcanza, responde `409 Conflict` con `{ "mensaje": "Saldo insuficiente para realizar el retiro" }`.
-
-## Autenticación y autorización por canal
-
-Cada canal requiere su propio rol para acceder: ROLE_WEB, ROLE_MOVIL y ROLE_CAJERO. La autenticación es vía JWT — el cliente hace login una vez y usa el token en cada request siguiente, sin que el servidor guarde sesión (STATELESS).
-
-POST /api/auth/login recibe username/password y devuelve el token si las credenciales son válidas:
-
-POST /api/auth/login
-Content-Type: application/json
-
-{ "username": "cliente.web", "password": "Clave123!" }
-
-
-```json
-{ "token": "eyJhbGciOiJIUzI1NiJ9..." }
+docker compose up -d --build
 ```
 
-Ese token se envía en cada request al canal correspondiente como header Authorization: Bearer <token>. Spring Security valida el rol contra la ruta: /api/web/** exige ROLE_WEB, /api/movil/** exige ROLE_MOVIL, /api/cajero/** exige ROLE_CAJERO — un token válido de un canal recibe 403 Forbidden si intenta usarse contra otro. DataInitializer crea 3 usuarios de prueba al arrancar (uno por rol, contraseña Clave123!) solo si la tabla usuarios está vacía.
+`--build` construye las 8 imágenes `banco/<modulo>:latest`; si ya están construidas basta con `docker compose up -d`. Los servicios arrancan en orden según sus dependencias (`depends_on` con `healthcheck`): primero `mysql`, `kafka`, `config-server` y `eureka-server`; luego `auth-server`; después `core-bancario`, y al final los tres BFF. Hay que esperar a que todos figuren como `healthy`:
 
-## HTTPS
+```
+docker compose ps
+```
 
-El servidor corre sobre HTTPS con un certificado autofirmado (keystore.p12, generado con keytool), configurado en application.properties (server.ssl.*). Al no venir de una entidad certificadora reconocida, tanto Postman como los navegadores muestran una advertencia de certificado no confiable al conectarse — comportamiento esperado para un certificado autofirmado en un entorno de desarrollo, no un error.
+Luego de que estén `healthy`, conviene esperar unos 30 segundos antes de la primera llamada a un BFF: Eureka tarda en propagar el registro de `core-bancario` y, mientras tanto, el BFF puede responder `503`.
 
-Para generar tu propio certificado local:
+La base de datos se carga automáticamente desde `db/init/01-datos.sql` la primera vez que se crea el volumen de MySQL (cuentas, transacciones, movimientos y estados de cuenta anuales). Los usuarios de la tabla `usuarios` los crea `core-bancario` al arrancar.
 
-keytool -genkeypair -alias bancoxyz -keyalg RSA -keysize 2048 -storetype PKCS12 -keystore src/main/resources/keystore.p12 -validity 365
+### URLs útiles
 
+- Dashboard de Eureka: http://localhost:8761
+- Config Server: http://localhost:8888/{servicio}/default
+- Authorization Server (token): http://localhost:9000/oauth2/token
+- BFF web, móvil y cajero: https://localhost:8081, https://localhost:8082, https://localhost:8083
+- MySQL: `localhost:3307` (usuario `root`, base `banco_xyz`)
 
-## Evidencia de ejecución
+`core-bancario` y `servicio-auditoria` no publican puertos: solo son accesibles dentro de la red de Docker Compose. Core no tiene autenticación propia, por eso se expone únicamente a través de los BFF.
 
-La evidencia de ejecución — logs y capturas de los 3 Jobs de batch corriendo, y las pruebas de autenticación/autorización por canal junto con HTTPS — se entrega en un documento Word aparte, incluido en la misma carpeta de esta entrega.
+### Apagar
+
+```
+docker compose down       # detiene y elimina los contenedores; los datos de MySQL se conservan
+docker compose down -v    # además borra el volumen de MySQL (la próxima vez se recarga desde db/init)
+```
+
+### Escalar el servicio de auditoría
+
+```
+docker compose up -d --scale servicio-auditoria=2
+```
+
+Las dos instancias comparten el grupo de consumidores `auditoria`, así que Kafka reparte entre ellas las 2 particiones del topic.
+
+### Ejecución local sin Docker
+
+Cada servicio lee `CONFIG_SERVER_URL` y `EUREKA_URL` con `localhost` como valor por defecto, así que también se pueden ejecutar los jars directamente. Requiere MySQL en `localhost:3306` y un broker Kafka en `localhost:9092`. Primero se compila con `./mvnw clean install`: el test `BatchApplicationTests` necesita `config-server` corriendo, o bien se usa `-DskipTests`. Después se levanta cada módulo con `java -jar <modulo>/target/<modulo>-0.0.1-SNAPSHOT.jar` en este orden: `config-server`, `eureka-server`, `auth-server`, `core-bancario`, los BFF y `servicio-auditoria`.
+
+## 4. Seguridad OAuth2
+
+- **Authorization Server** (`auth-server`, Spring Security 7): emite access tokens JWT firmados con **RS256** mediante el flujo **client_credentials**.
+- **Un cliente por canal**, autenticado con `client_secret_basic`, con tokens de 1 hora:
+
+| Cliente | Scope | BFF que lo acepta |
+|---|---|---|
+| `web-client` | `web` | bff-web (exige `SCOPE_web`) |
+| `movil-client` | `movil` | bff-movil (exige `SCOPE_movil`) |
+| `cajero-client` | `cajero` | bff-cajero (exige `SCOPE_cajero`) |
+
+- **Los BFF son resource servers**: validan la firma de cada token con las claves públicas que publica `auth-server` en `/oauth2/jwks` y exigen el scope de su canal. Sin token responden `401`, y con el token de otro canal responden `403`. Son stateless y no tienen endpoint de login propio.
+- **Los secretos de los clientes** no están en el código: se guardan cifrados (`{cipher}...`) en `config-server/src/main/resources/config-repo/auth-server.properties`. Con el sistema levantado, el Config Server los entrega descifrados:
+
+```
+curl http://localhost:8888/auth-server/default
+```
+
+### Ejemplo: token del cajero y consulta de saldo
+
+PowerShell 5.1 (reemplazar `<secreto-cajero>` por el valor obtenido del Config Server; el `\"` del cuerpo JSON es el escape que necesita `curl.exe` en esa versión):
+
+```powershell
+$basic = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("cajero-client:<secreto-cajero>"))
+$token = (Invoke-RestMethod -Method Post -Uri http://localhost:9000/oauth2/token `
+    -Headers @{ Authorization = "Basic $basic" } `
+    -Body @{ grant_type = "client_credentials"; scope = "cajero" }).access_token
+
+curl.exe -k -H "Authorization: Bearer $token" https://localhost:8083/api/cajero/cuentas/108/saldo
+curl.exe -k -X POST -H "Authorization: Bearer $token" -H "Content-Type: application/json" `
+    -d '{\"monto\": 100}' https://localhost:8083/api/cajero/cuentas/108/retiro
+```
+
+Con curl (bash):
+
+```
+curl -s -u cajero-client:<secreto-cajero> -d grant_type=client_credentials -d scope=cajero http://localhost:9000/oauth2/token
+curl -k -H "Authorization: Bearer <access_token>" https://localhost:8083/api/cajero/cuentas/108/saldo
+```
+
+`-k` es necesario porque los BFF usan HTTPS con un certificado autofirmado (`keystore.p12` en los recursos de cada BFF). La contraseña del keystore también llega cifrada desde el Config Server.
+
+## 5. Mensajería con Kafka
+
+- **Productor**: `core-bancario`. Cuando un retiro se completa con éxito, después de guardar el nuevo saldo, publica el evento `RetiroRealizado` (`cuentaId`, `monto`, `nuevoSaldo`, `fecha`) en formato JSON.
+- **Topic**: `retiros-realizados`, con 2 particiones, y la clave del mensaje es el `cuentaId`, así que los eventos de una misma cuenta quedan siempre en la misma partición y en orden. Si Kafka no está disponible, el retiro se completa igual: la falla al publicar solo se registra en el log de Core.
+- **Consumidor**: `servicio-auditoria`, en el grupo `auditoria`. Registra cada evento con su partición, offset y payload:
+
+```
+docker compose logs servicio-auditoria
+```
+
+```
+[AUDITORIA] instancia=puerto 8084 | particion=1 | offset=0 | payload={"cuentaId":108,"monto":100.0,"nuevoSaldo":...,"fecha":"..."}
+```
+
+Con el servicio escalado, todas las instancias muestran el puerto 8084, que es el interno de cada contenedor. Para distinguirlas hay que mirar el prefijo de cada línea en `docker compose logs`, que trae el nombre del contenedor (`servicio-auditoria-1`, `servicio-auditoria-2`).
+
+## 6. Resiliencia
+
+Cada BFF protege sus llamadas a Core con un **circuit breaker de Resilience4j** llamado `core`:
+
+- Ventana de las últimas 4 llamadas; se abre cuando falla el 50 % o más.
+- Abierto durante 10 s; luego pasa a semiabierto y deja pasar 2 llamadas de prueba.
+- **Fallback**: si Core no responde o el circuito está abierto, el BFF devuelve `503 Service Unavailable` con un mensaje controlado en lugar de un error 500.
+- En `bff-cajero`, los errores de negocio de Core (por ejemplo, el `409` por saldo insuficiente) no cuentan como fallas y se devuelven tal cual.
+
+El estado del circuito se consulta en `/actuator/circuitbreakers` de cada BFF, con un token del canal:
+
+```
+curl.exe -k -H "Authorization: Bearer $token" https://localhost:8083/actuator/circuitbreakers
+```
+
+Para probarlo:
+
+```
+docker compose stop core-bancario
+```
+
+Al repetir varias veces una llamada al BFF, las primeras fallan al intentar conectar, y a partir de ahí el circuito pasa a `OPEN` y el BFF responde `503` de inmediato. Con `docker compose start core-bancario`, y pasados los 10 s, el circuito vuelve a `CLOSED` y las llamadas funcionan otra vez.
+
+## 7. Imágenes Docker
+
+Cada módulo tiene su propio `Dockerfile` multi-stage (por ejemplo, `core-bancario/Dockerfile`), construido con la raíz del repositorio como contexto:
+
+- **Etapa build**: `maven:3.9-eclipse-temurin-17` compila solo el módulo y sus dependencias (`mvn -pl <modulo> -am package -DskipTests`), con caché de dependencias de Maven.
+- **Etapa runtime**: `eclipse-temurin:17-jre` con únicamente el jar, ejecutado con un usuario sin privilegios.
+
+Las imágenes se llaman `banco/<modulo>:latest`. Para construir una sola:
+
+```
+docker build -f <modulo>/Dockerfile -t banco/<modulo>:latest .
+```
+
+El `.dockerignore` excluye, entre otros, `target/`, `.git`, `db/` y `docker-compose.yaml`, para que el contexto sea liviano y los cambios en esos archivos no invaliden la caché de construcción.
+
+## 8. Limitaciones conocidas
+
+- La clave de cifrado del Config Server (`encrypt.key`) y la contraseña de MySQL (en `docker-compose.yaml`) están en texto plano en el repositorio. Es aceptable solo como entorno académico; en un entorno real se inyectarían como secretos, por ejemplo con variables de entorno o un gestor de secretos.
+- La tabla `usuarios` y el endpoint `/api/core/auth/validar` de Core siguen existiendo, pero ya no se usan para autenticar: la autenticación de los canales la resuelve OAuth2.
+- `auth-server` genera su clave RSA en memoria al arrancar: si se reinicia, cambia la clave y los tokens emitidos antes dejan de ser válidos.
+- Los clientes OAuth2 se registran en memoria dentro de `auth-server`; agregar o modificar un cliente requiere cambiar el código y volver a desplegar.
+- Los cambios en `config-repo/` requieren reconstruir la imagen de `config-server`, porque los archivos se sirven desde el classpath.
+
+## 9. Evidencias
+
+Las evidencias de ejecución de esta entrega (despliegue con Docker Compose, registro en Eureka, obtención de tokens OAuth2 y llamadas a los BFF, eventos de Kafka y pruebas del circuit breaker) se encuentran en la carpeta de evidencias incluida en la entrega.

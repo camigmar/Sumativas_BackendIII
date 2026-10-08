@@ -3,8 +3,8 @@ name: banco-xyz
 # Orden de arranque (depends_on + healthcheck):
 #   1. mysql, kafka, config-server y eureka-server (infraestructura, sin dependencias entre si)
 #   2. auth-server y servicio-auditoria
-#   3. core-bancario (necesita config-server, eureka-server, mysql y kafka sanos)
-#   4. bff-web, bff-movil y bff-cajero (necesitan ademas auth-server y core-bancario sanos)
+#   3. servicio-cuentas (necesita config-server, eureka-server, mysql y kafka sanos)
+#   4. bff-web, bff-movil y bff-cajero (necesitan ademas auth-server y servicio-cuentas sanos)
 #
 # Dentro de la red de compose cada servicio se alcanza por su nombre, no por localhost.
 # Los application.properties leen CONFIG_SERVER_URL y EUREKA_URL (con localhost por defecto),
@@ -16,7 +16,7 @@ services:
   mysql:
     image: mysql:8
     environment:
-      # Mismo valor que cifra el Config Server para core-bancario; limitacion conocida, entorno de desarrollo.
+      # Mismo valor que cifra el Config Server para servicio-cuentas; limitacion conocida, entorno de desarrollo.
       MYSQL_ROOT_PASSWORD: NuevaClave123
       MYSQL_DATABASE: banco_xyz
     volumes:
@@ -111,11 +111,11 @@ services:
       retries: 10
       start_period: 40s
 
-  core-bancario:
-    image: banco/core-bancario:latest
+  servicio-cuentas:
+    image: banco/servicio-cuentas:latest
     build:
       context: .
-      dockerfile: core-bancario/Dockerfile
+      dockerfile: servicio-cuentas/Dockerfile
     restart: on-failure
     # Sin puerto publicado: la API interna de Core no tiene autenticacion, asi que solo se
     # alcanza dentro de la red de compose (los BFF la encuentran via Eureka).
@@ -155,7 +155,7 @@ services:
         condition: service_healthy
       auth-server:
         condition: service_healthy
-      core-bancario:
+      servicio-cuentas:
         condition: service_healthy
     environment:
       JAVA_TOOL_OPTIONS: -Xmx256m
@@ -185,7 +185,7 @@ services:
         condition: service_healthy
       auth-server:
         condition: service_healthy
-      core-bancario:
+      servicio-cuentas:
         condition: service_healthy
     environment:
       JAVA_TOOL_OPTIONS: -Xmx256m
@@ -214,7 +214,7 @@ services:
         condition: service_healthy
       auth-server:
         condition: service_healthy
-      core-bancario:
+      servicio-cuentas:
         condition: service_healthy
     environment:
       JAVA_TOOL_OPTIONS: -Xmx256m

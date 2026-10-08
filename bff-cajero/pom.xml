@@ -13,7 +13,7 @@
 	<artifactId>bff-cajero</artifactId>
 	<packaging>jar</packaging>
 	<name>bff-cajero</name>
-	<description>BFF del canal Cajero: expone /api/cajero y consume el core-bancario</description>
+	<description>BFF del canal Cajero: expone /api/cajero y consume el servicio-cuentas</description>
 
 	<dependencies>
 		<dependency>

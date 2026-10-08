@@ -10,9 +10,9 @@
 		<relativePath>..</relativePath>
 	</parent>
 
-	<artifactId>core-bancario</artifactId>
+	<artifactId>servicio-cuentas</artifactId>
 	<packaging>jar</packaging>
-	<name>core-bancario</name>
+	<name>servicio-cuentas</name>
 	<description>Batch, API interna de Core y validacion de credenciales del Banco XYZ</description>
 
 	<dependencies>

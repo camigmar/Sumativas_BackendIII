@@ -13,7 +13,7 @@
 	<artifactId>bff-web</artifactId>
 	<packaging>jar</packaging>
 	<name>bff-web</name>
-	<description>BFF del canal Web: expone /api/web y consume el core-bancario</description>
+	<description>BFF del canal Web: expone /api/web y consume el servicio-cuentas</description>
 
 	<dependencies>
 		<dependency>

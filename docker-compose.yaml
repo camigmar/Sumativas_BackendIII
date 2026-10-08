@@ -2,7 +2,7 @@ name: banco-xyz
 
 # Orden de arranque (depends_on + healthcheck):
 #   1. mysql, kafka, config-server y eureka-server (infraestructura, sin dependencias entre si)
-#   2. auth-server y servicio-auditoria
+#   2. auth-server, servicio-auditoria y servicio-clientes (este necesita config-server, eureka-server y mysql sanos)
 #   3. servicio-cuentas (necesita config-server, eureka-server, mysql y kafka sanos)
 #   4. bff-web, bff-movil y bff-cajero (necesitan ademas auth-server y servicio-cuentas sanos)
 #
@@ -16,7 +16,7 @@ services:
   mysql:
     image: mysql:8
     environment:
-      # Mismo valor que cifra el Config Server para servicio-cuentas; limitacion conocida, entorno de desarrollo.
+      # Mismo valor que cifra el Config Server para servicio-cuentas y servicio-clientes; limitacion conocida, entorno de desarrollo.
       MYSQL_ROOT_PASSWORD: NuevaClave123
       MYSQL_DATABASE: banco_xyz
     volumes:
@@ -138,6 +138,35 @@ services:
       SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
     healthcheck:
       test: ["CMD-SHELL", "bash -c '</dev/tcp/127.0.0.1/8080'"]
+      interval: 10s
+      retries: 10
+      start_period: 40s
+
+  servicio-clientes:
+    image: banco/servicio-clientes:latest
+    build:
+      context: .
+      dockerfile: servicio-clientes/Dockerfile
+    restart: on-failure
+    depends_on:
+      config-server:
+        condition: service_healthy
+      eureka-server:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+    environment:
+      JAVA_TOOL_OPTIONS: -Xmx256m
+      CONFIG_SERVER_URL: http://config-server:8888
+      EUREKA_URL: http://eureka-server:8761/eureka/
+      EUREKA_INSTANCE_PREFER_IP_ADDRESS: "true"
+      # Base de datos propia del servicio, en la misma instancia de MySQL.
+      SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/banco_clientes?createDatabaseIfNotExists=true
+    # Puerto publicado solo hasta el paso de seguridad OAuth2; despues se accedera a traves de los BFF.
+    ports:
+      - "8085:8085"
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/127.0.0.1/8085'"]
       interval: 10s
       retries: 10
       start_period: 40s

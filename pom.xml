@@ -29,6 +29,7 @@
 		<module>bff-cajero</module>
 		<module>servicio-auditoria</module>
 		<module>auth-server</module>
+		<module>servicio-clientes</module>
 	</modules>
 
 	<dependencyManagement>

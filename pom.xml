@@ -30,6 +30,7 @@
 		<module>servicio-auditoria</module>
 		<module>auth-server</module>
 		<module>servicio-clientes</module>
+		<module>servicio-pagos</module>
 	</modules>
 
 	<dependencyManagement>

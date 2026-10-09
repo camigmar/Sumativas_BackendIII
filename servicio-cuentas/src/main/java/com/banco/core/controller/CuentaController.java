@@ -4,6 +4,8 @@ import com.banco.batch.model.CuentaInteres;
 import com.banco.batch.model.EstadoCuentaAnual;
 import com.banco.batch.model.MovimientoAnual;
 import com.banco.core.dto.ErrorDTO;
+import com.banco.core.dto.MovimientoRequestDTO;
+import com.banco.core.dto.MovimientoResponseDTO;
 import com.banco.core.dto.RetiroRequestDTO;
 import com.banco.core.dto.RetiroResponseDTO;
 import com.banco.core.exception.CuentaNoEncontradaException;
@@ -63,6 +65,18 @@ public class CuentaController {
     public ResponseEntity<RetiroResponseDTO> retiro(@PathVariable Long cuentaId, @RequestBody RetiroRequestDTO request) {
         double nuevoSaldo = cuentaService.retirar(cuentaId, request.monto());
         return ResponseEntity.ok(new RetiroResponseDTO(cuentaId, request.monto(), nuevoSaldo));
+    }
+
+    @PostMapping("/{cuentaId}/debito")
+    public ResponseEntity<MovimientoResponseDTO> debito(@PathVariable Long cuentaId, @RequestBody MovimientoRequestDTO request) {
+        double nuevoSaldo = cuentaService.debitar(cuentaId, request.monto());
+        return ResponseEntity.ok(new MovimientoResponseDTO(cuentaId, request.monto(), nuevoSaldo));
+    }
+
+    @PostMapping("/{cuentaId}/credito")
+    public ResponseEntity<MovimientoResponseDTO> credito(@PathVariable Long cuentaId, @RequestBody MovimientoRequestDTO request) {
+        double nuevoSaldo = cuentaService.acreditar(cuentaId, request.monto());
+        return ResponseEntity.ok(new MovimientoResponseDTO(cuentaId, request.monto(), nuevoSaldo));
     }
 
     @ExceptionHandler(MontoInvalidoException.class)

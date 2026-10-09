@@ -1,0 +1,87 @@
+package com.banco.pagos.model;
+
+import jakarta.persistence.*;
+
+import java.time.LocalDateTime;
+
+@Entity
+@Table(name = "pagos")
+public class Pago {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false)
+    private TipoPago tipo;
+
+    // Cuenta sobre la que se hace el retiro o el deposito, o la que paga en una transferencia.
+    @Column(nullable = false)
+    private Long cuentaOrigen;
+
+    // Solo en transferencias.
+    private Long cuentaDestino;
+
+    @Column(nullable = false)
+    private Double monto;
+
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false)
+    private EstadoPago estado;
+
+    @Column(length = 1000)
+    private String motivo;
+
+    @Column(nullable = false)
+    private LocalDateTime fecha;
+
+    public Long getId() {
+        return id;
+    }
+    public void setId(Long id) {
+        this.id = id;
+    }
+    public TipoPago getTipo() {
+        return tipo;
+    }
+    public void setTipo(TipoPago tipo) {
+        this.tipo = tipo;
+    }
+    public Long getCuentaOrigen() {
+        return cuentaOrigen;
+    }
+    public void setCuentaOrigen(Long cuentaOrigen) {
+        this.cuentaOrigen = cuentaOrigen;
+    }
+    public Long getCuentaDestino() {
+        return cuentaDestino;
+    }
+    public void setCuentaDestino(Long cuentaDestino) {
+        this.cuentaDestino = cuentaDestino;
+    }
+    public Double getMonto() {
+        return monto;
+    }
+    public void setMonto(Double monto) {
+        this.monto = monto;
+    }
+    public EstadoPago getEstado() {
+        return estado;
+    }
+    public void setEstado(EstadoPago estado) {
+        this.estado = estado;
+    }
+    public String getMotivo() {
+        return motivo;
+    }
+    public void setMotivo(String motivo) {
+        this.motivo = motivo;
+    }
+    public LocalDateTime getFecha() {
+        return fecha;
+    }
+    public void setFecha(LocalDateTime fecha) {
+        this.fecha = fecha;
+    }
+}

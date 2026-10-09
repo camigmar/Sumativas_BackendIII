@@ -95,4 +95,77 @@ class CuentaServiceTest {
         assertThat(evento.monto()).isEqualTo(200.0);
         assertThat(evento.nuevoSaldo()).isEqualTo(300.0);
     }
+
+    @Test
+    void debitar_casoExitosoDescuentaGuardaYNoPublicaEvento() {
+        CuentaInteres cuenta = new CuentaInteres();
+        cuenta.setCuentaId(101L);
+        cuenta.setSaldo(500.0);
+        when(cuentaInteresRepository.findByIdForUpdate(101L)).thenReturn(Optional.of(cuenta));
+
+        double nuevoSaldo = cuentaService.debitar(101L, 200.0);
+
+        assertThat(nuevoSaldo).isEqualTo(300.0);
+        assertThat(cuenta.getSaldo()).isEqualTo(300.0);
+        verify(cuentaInteresRepository).save(cuenta);
+        verifyNoInteractions(retiroEventPublisher);
+    }
+
+    @Test
+    void debitar_montoInvalidoLanzaExcepcion() {
+        assertThrows(MontoInvalidoException.class, () -> cuentaService.debitar(101L, null));
+        assertThrows(MontoInvalidoException.class, () -> cuentaService.debitar(101L, 0.0));
+        assertThrows(MontoInvalidoException.class, () -> cuentaService.debitar(101L, -10.0));
+        verifyNoInteractions(cuentaInteresRepository);
+    }
+
+    @Test
+    void debitar_cuentaNoEncontradaLanzaExcepcion() {
+        when(cuentaInteresRepository.findByIdForUpdate(999L)).thenReturn(Optional.empty());
+
+        assertThrows(CuentaNoEncontradaException.class, () -> cuentaService.debitar(999L, 100.0));
+        verify(cuentaInteresRepository, never()).save(any());
+    }
+
+    @Test
+    void debitar_saldoInsuficienteLanzaExcepcionYNoGuarda() {
+        CuentaInteres cuenta = new CuentaInteres();
+        cuenta.setCuentaId(101L);
+        cuenta.setSaldo(50.0);
+        when(cuentaInteresRepository.findByIdForUpdate(101L)).thenReturn(Optional.of(cuenta));
+
+        assertThrows(SaldoInsuficienteException.class, () -> cuentaService.debitar(101L, 100.0));
+        assertThat(cuenta.getSaldo()).isEqualTo(50.0);
+        verify(cuentaInteresRepository, never()).save(any());
+    }
+
+    @Test
+    void acreditar_casoExitosoSumaGuardaYNoPublicaEvento() {
+        CuentaInteres cuenta = new CuentaInteres();
+        cuenta.setCuentaId(102L);
+        cuenta.setSaldo(100.0);
+        when(cuentaInteresRepository.findByIdForUpdate(102L)).thenReturn(Optional.of(cuenta));
+
+        double nuevoSaldo = cuentaService.acreditar(102L, 250.0);
+
+        assertThat(nuevoSaldo).isEqualTo(350.0);
+        assertThat(cuenta.getSaldo()).isEqualTo(350.0);
+        verify(cuentaInteresRepository).save(cuenta);
+        verifyNoInteractions(retiroEventPublisher);
+    }
+
+    @Test
+    void acreditar_montoInvalidoLanzaExcepcion() {
+        assertThrows(MontoInvalidoException.class, () -> cuentaService.acreditar(102L, null));
+        assertThrows(MontoInvalidoException.class, () -> cuentaService.acreditar(102L, 0.0));
+        verifyNoInteractions(cuentaInteresRepository);
+    }
+
+    @Test
+    void acreditar_cuentaNoEncontradaLanzaExcepcion() {
+        when(cuentaInteresRepository.findByIdForUpdate(999L)).thenReturn(Optional.empty());
+
+        assertThrows(CuentaNoEncontradaException.class, () -> cuentaService.acreditar(999L, 100.0));
+        verify(cuentaInteresRepository, never()).save(any());
+    }
 }

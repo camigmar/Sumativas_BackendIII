@@ -35,3 +35,6 @@ build/
 *.log
 
 .claude/
+
+### Salida de compilacion del IDE (VS Code Java) ###
+bin/

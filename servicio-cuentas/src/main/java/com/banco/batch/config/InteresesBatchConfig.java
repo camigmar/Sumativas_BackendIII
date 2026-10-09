@@ -6,6 +6,7 @@ import com.banco.batch.listener.LoggingStepExecutionListener;
 import com.banco.batch.model.CuentaInteres;
 import com.banco.batch.policy.InteresSkipPolicy;
 import com.banco.batch.processor.InteresProcessor;
+import com.banco.batch.writer.PreservarDatosCuentaWriter;
 import jakarta.persistence.EntityManagerFactory;
 import org.springframework.batch.core.job.Job;
 import org.springframework.batch.core.step.Step;
@@ -60,11 +61,13 @@ public class InteresesBatchConfig {
         return new InteresProcessor();
     }
 
+    // El merge del JpaItemWriter va envuelto para no pisar estado ni clienteId de cuentas ya existentes.
     @Bean
-    public JpaItemWriter<CuentaInteres> interesWriter(EntityManagerFactory emf) {
-        return new JpaItemWriterBuilder<CuentaInteres>()
+    public PreservarDatosCuentaWriter interesWriter(EntityManagerFactory emf) {
+        JpaItemWriter<CuentaInteres> jpaWriter = new JpaItemWriterBuilder<CuentaInteres>()
                 .entityManagerFactory(emf)
                 .build();
+        return new PreservarDatosCuentaWriter(emf, jpaWriter);
     }
 
     @Bean
@@ -95,7 +98,7 @@ public class InteresesBatchConfig {
                              PlatformTransactionManager tx,
                              SynchronizedItemStreamReader<CuentaInteres> interesReader,
                              InteresProcessor interesProcessor,
-                             JpaItemWriter<CuentaInteres> interesWriter,
+                             PreservarDatosCuentaWriter interesWriter,
                              TaskExecutor interesTaskExecutor,
                              LoggingSkipListener<CuentaInteres, CuentaInteres> interesSkipListener,
                              LoggingStepExecutionListener interesStepExecutionListener,

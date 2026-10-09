@@ -14,6 +14,13 @@ public class CuentaInteres {
     private String tipo;
     private Double saldoFinal;
 
+    // Nullable: las filas anteriores a este campo quedan en null y se tratan como ACTIVA (ver getEstado).
+    @Enumerated(EnumType.STRING)
+    private EstadoCuenta estado = EstadoCuenta.ACTIVA;
+
+    // Null en las cuentas cargadas por el batch, que no tienen cliente asociado.
+    private Long clienteId;
+
     public Long getCuentaId() {
         return cuentaId;
     }
@@ -49,5 +56,20 @@ public class CuentaInteres {
     }
     public void setSaldoFinal(Double saldoFinal) {
         this.saldoFinal = saldoFinal;
+    }
+    public EstadoCuenta getEstado() {
+        return estado != null ? estado : EstadoCuenta.ACTIVA;
+    }
+    public void setEstado(EstadoCuenta estado) {
+        this.estado = estado;
+    }
+    public boolean estaCerrada() {
+        return getEstado() == EstadoCuenta.CERRADA;
+    }
+    public Long getClienteId() {
+        return clienteId;
+    }
+    public void setClienteId(Long clienteId) {
+        this.clienteId = clienteId;
     }
 }

@@ -1,10 +1,20 @@
 package com.banco.core.service;
 
 import com.banco.batch.model.CuentaInteres;
+import com.banco.batch.model.EstadoCuenta;
 import com.banco.batch.repository.CuentaInteresRepository;
 import com.banco.batch.repository.EstadoCuentaAnualRepository;
+import com.banco.core.client.ClientesClient;
+import com.banco.core.dto.ActualizarCuentaRequestDTO;
+import com.banco.core.dto.AperturaCuentaRequestDTO;
+import com.banco.core.dto.ClienteDTO;
 import com.banco.core.event.RetiroEventPublisher;
 import com.banco.core.event.RetiroRealizadoEvent;
+import com.banco.core.exception.CierreNoPermitidoException;
+import com.banco.core.exception.ClienteInactivoException;
+import com.banco.core.exception.ClienteNoEncontradoException;
+import com.banco.core.exception.ClientesNoDisponibleException;
+import com.banco.core.exception.CuentaCerradaException;
 import com.banco.core.exception.CuentaNoEncontradaException;
 import com.banco.core.exception.MontoInvalidoException;
 import com.banco.core.exception.SaldoInsuficienteException;
@@ -14,6 +24,8 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.transaction.support.TransactionCallback;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.util.Optional;
 
@@ -36,6 +48,12 @@ class CuentaServiceTest {
 
     @Mock
     private RetiroEventPublisher retiroEventPublisher;
+
+    @Mock
+    private ClientesClient clientesClient;
+
+    @Mock
+    private TransactionTemplate transactionTemplate;
 
     @InjectMocks
     private CuentaService cuentaService;
@@ -167,5 +185,150 @@ class CuentaServiceTest {
 
         assertThrows(CuentaNoEncontradaException.class, () -> cuentaService.acreditar(999L, 100.0));
         verify(cuentaInteresRepository, never()).save(any());
+    }
+
+    @Test
+    void abrirCuenta_casoExitosoAsignaSiguienteIdActivaYCliente() {
+        when(clientesClient.obtenerCliente(7L)).thenReturn(new ClienteDTO(7L, "ACTIVO"));
+        ejecutarTransaccionesDirecto();
+        when(cuentaInteresRepository.findFirstByOrderByCuentaIdDesc()).thenReturn(Optional.of(cuenta(108L, 100.0)));
+        when(cuentaInteresRepository.save(any(CuentaInteres.class))).thenAnswer(invocacion -> invocacion.getArgument(0));
+
+        CuentaInteres cuenta = cuentaService.abrirCuenta(aperturaPara(7L));
+
+        assertThat(cuenta.getCuentaId()).isEqualTo(109L);
+        assertThat(cuenta.getClienteId()).isEqualTo(7L);
+        assertThat(cuenta.getEstado()).isEqualTo(EstadoCuenta.ACTIVA);
+        assertThat(cuenta.getSaldo()).isEqualTo(1000.0);
+        assertThat(cuenta.getTipo()).isEqualTo("ahorro");
+    }
+
+    @Test
+    void abrirCuenta_clienteInexistenteNoAbreLaCuenta() {
+        when(clientesClient.obtenerCliente(99L)).thenThrow(new ClienteNoEncontradoException("El cliente 99 no existe"));
+
+        assertThrows(ClienteNoEncontradoException.class, () -> cuentaService.abrirCuenta(aperturaPara(99L)));
+        verifyNoInteractions(transactionTemplate);
+        verifyNoInteractions(cuentaInteresRepository);
+    }
+
+    @Test
+    void abrirCuenta_clienteInactivoLanzaExcepcion() {
+        when(clientesClient.obtenerCliente(7L)).thenReturn(new ClienteDTO(7L, "INACTIVO"));
+
+        assertThrows(ClienteInactivoException.class, () -> cuentaService.abrirCuenta(aperturaPara(7L)));
+        verifyNoInteractions(transactionTemplate);
+        verifyNoInteractions(cuentaInteresRepository);
+    }
+
+    @Test
+    void abrirCuenta_servicioClientesCaidoLanzaNoDisponible() {
+        when(clientesClient.obtenerCliente(7L))
+                .thenThrow(new ClientesNoDisponibleException("servicio-clientes no esta disponible", null));
+
+        assertThrows(ClientesNoDisponibleException.class, () -> cuentaService.abrirCuenta(aperturaPara(7L)));
+        verifyNoInteractions(cuentaInteresRepository);
+    }
+
+    @Test
+    void cerrarCuenta_conSaldoLanzaExcepcionYNoCierra() {
+        CuentaInteres cuenta = cuenta(101L, 50.0);
+        when(cuentaInteresRepository.findByIdForUpdate(101L)).thenReturn(Optional.of(cuenta));
+
+        assertThrows(CierreNoPermitidoException.class, () -> cuentaService.cerrarCuenta(101L));
+        assertThat(cuenta.getEstado()).isEqualTo(EstadoCuenta.ACTIVA);
+        verify(cuentaInteresRepository, never()).save(any());
+    }
+
+    @Test
+    void cerrarCuenta_conSaldoCeroQuedaCerrada() {
+        CuentaInteres cuenta = cuenta(101L, 0.0);
+        when(cuentaInteresRepository.findByIdForUpdate(101L)).thenReturn(Optional.of(cuenta));
+        when(cuentaInteresRepository.save(cuenta)).thenReturn(cuenta);
+
+        CuentaInteres cerrada = cuentaService.cerrarCuenta(101L);
+
+        assertThat(cerrada.getEstado()).isEqualTo(EstadoCuenta.CERRADA);
+        verify(cuentaInteresRepository).save(cuenta);
+    }
+
+    @Test
+    void cerrarCuenta_yaCerradaLanzaExcepcion() {
+        CuentaInteres cuenta = cuenta(101L, 0.0);
+        cuenta.setEstado(EstadoCuenta.CERRADA);
+        when(cuentaInteresRepository.findByIdForUpdate(101L)).thenReturn(Optional.of(cuenta));
+
+        assertThrows(CuentaCerradaException.class, () -> cuentaService.cerrarCuenta(101L));
+        verify(cuentaInteresRepository, never()).save(any());
+    }
+
+    @Test
+    void actualizarCuenta_casoExitosoCambiaDatosSinTocarSaldoNiCliente() {
+        CuentaInteres cuenta = cuenta(101L, 500.0);
+        cuenta.setClienteId(7L);
+        when(cuentaInteresRepository.findByIdForUpdate(101L)).thenReturn(Optional.of(cuenta));
+        when(cuentaInteresRepository.save(cuenta)).thenReturn(cuenta);
+
+        CuentaInteres actualizada = cuentaService.actualizarCuenta(101L,
+                new ActualizarCuentaRequestDTO("Juan Perez", 40, "hipoteca"));
+
+        assertThat(actualizada.getNombre()).isEqualTo("Juan Perez");
+        assertThat(actualizada.getEdad()).isEqualTo(40);
+        assertThat(actualizada.getTipo()).isEqualTo("hipoteca");
+        assertThat(actualizada.getSaldo()).isEqualTo(500.0);
+        assertThat(actualizada.getClienteId()).isEqualTo(7L);
+    }
+
+    @Test
+    void actualizarCuenta_cerradaLanzaExcepcion() {
+        CuentaInteres cuenta = cuenta(101L, 0.0);
+        cuenta.setEstado(EstadoCuenta.CERRADA);
+        when(cuentaInteresRepository.findByIdForUpdate(101L)).thenReturn(Optional.of(cuenta));
+
+        assertThrows(CuentaCerradaException.class, () -> cuentaService.actualizarCuenta(101L,
+                new ActualizarCuentaRequestDTO("Juan Perez", 40, "hipoteca")));
+        verify(cuentaInteresRepository, never()).save(any());
+    }
+
+    @Test
+    void debitar_cuentaCerradaLanzaExcepcionYNoCambiaSaldo() {
+        CuentaInteres cuenta = cuenta(101L, 500.0);
+        cuenta.setEstado(EstadoCuenta.CERRADA);
+        when(cuentaInteresRepository.findByIdForUpdate(101L)).thenReturn(Optional.of(cuenta));
+
+        CuentaCerradaException ex = assertThrows(CuentaCerradaException.class, () -> cuentaService.debitar(101L, 100.0));
+        assertThat(ex.getMessage()).isEqualTo("La cuenta 101 esta cerrada");
+        assertThat(cuenta.getSaldo()).isEqualTo(500.0);
+        verify(cuentaInteresRepository, never()).save(any());
+    }
+
+    @Test
+    void cuentaConEstadoNullSeTrataComoActiva() {
+        CuentaInteres cuenta = cuenta(101L, 500.0);
+        cuenta.setEstado(null);
+
+        assertThat(cuenta.getEstado()).isEqualTo(EstadoCuenta.ACTIVA);
+        assertThat(cuenta.estaCerrada()).isFalse();
+    }
+
+    // El TransactionTemplate simulado ejecuta el callback directamente, sin transaccion real.
+    @SuppressWarnings("unchecked")
+    private void ejecutarTransaccionesDirecto() {
+        when(transactionTemplate.execute(any())).thenAnswer(invocacion ->
+                ((TransactionCallback<Object>) invocacion.getArgument(0)).doInTransaction(null));
+    }
+
+    private AperturaCuentaRequestDTO aperturaPara(Long clienteId) {
+        return new AperturaCuentaRequestDTO(clienteId, "Ana Perez", 30, "ahorro", 1000.0);
+    }
+
+    private CuentaInteres cuenta(Long cuentaId, Double saldo) {
+        CuentaInteres cuenta = new CuentaInteres();
+        cuenta.setCuentaId(cuentaId);
+        cuenta.setNombre("Titular");
+        cuenta.setEdad(30);
+        cuenta.setTipo("ahorro");
+        cuenta.setSaldo(saldo);
+        return cuenta;
     }
 }

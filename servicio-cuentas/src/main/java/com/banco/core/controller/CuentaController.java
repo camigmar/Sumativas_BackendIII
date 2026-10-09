@@ -11,6 +11,8 @@ import com.banco.core.dto.MovimientoResponseDTO;
 import com.banco.core.dto.RetiroRequestDTO;
 import com.banco.core.dto.RetiroResponseDTO;
 import com.banco.core.exception.CierreNoPermitidoException;
+import com.banco.core.exception.ClaveIdempotenciaReutilizadaException;
+import com.banco.core.exception.ClientesRespuestaInesperadaException;
 import com.banco.core.exception.ClienteInactivoException;
 import com.banco.core.exception.ClienteNoEncontradoException;
 import com.banco.core.exception.ClientesNoDisponibleException;
@@ -100,15 +102,19 @@ public class CuentaController {
         return ResponseEntity.ok(new RetiroResponseDTO(cuentaId, request.monto(), nuevoSaldo));
     }
 
+    // Idempotency-Key opcional (servicio-pagos envia "pago-<id>-<operacion>"): un movimiento repetido
+    // con la misma clave devuelve el resultado original sin volver a mover el saldo.
     @PostMapping("/{cuentaId}/debito")
-    public ResponseEntity<MovimientoResponseDTO> debito(@PathVariable Long cuentaId, @RequestBody MovimientoRequestDTO request) {
-        double nuevoSaldo = cuentaService.debitar(cuentaId, request.monto());
+    public ResponseEntity<MovimientoResponseDTO> debito(@PathVariable Long cuentaId, @RequestBody MovimientoRequestDTO request,
+                                                        @RequestHeader(value = "Idempotency-Key", required = false) String clave) {
+        double nuevoSaldo = cuentaService.debitar(cuentaId, request.monto(), clave);
         return ResponseEntity.ok(new MovimientoResponseDTO(cuentaId, request.monto(), nuevoSaldo));
     }
 
     @PostMapping("/{cuentaId}/credito")
-    public ResponseEntity<MovimientoResponseDTO> credito(@PathVariable Long cuentaId, @RequestBody MovimientoRequestDTO request) {
-        double nuevoSaldo = cuentaService.acreditar(cuentaId, request.monto());
+    public ResponseEntity<MovimientoResponseDTO> credito(@PathVariable Long cuentaId, @RequestBody MovimientoRequestDTO request,
+                                                         @RequestHeader(value = "Idempotency-Key", required = false) String clave) {
+        double nuevoSaldo = cuentaService.acreditar(cuentaId, request.monto(), clave);
         return ResponseEntity.ok(new MovimientoResponseDTO(cuentaId, request.monto(), nuevoSaldo));
     }
 
@@ -140,6 +146,16 @@ public class CuentaController {
     @ExceptionHandler(ClientesNoDisponibleException.class)
     public ResponseEntity<ErrorDTO> handleClientesNoDisponible(ClientesNoDisponibleException ex) {
         return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(new ErrorDTO(ex.getMessage()));
+    }
+
+    @ExceptionHandler(ClientesRespuestaInesperadaException.class)
+    public ResponseEntity<ErrorDTO> handleClientesRespuestaInesperada(ClientesRespuestaInesperadaException ex) {
+        return ResponseEntity.status(HttpStatus.BAD_GATEWAY).body(new ErrorDTO(ex.getMessage()));
+    }
+
+    @ExceptionHandler(ClaveIdempotenciaReutilizadaException.class)
+    public ResponseEntity<ErrorDTO> handleClaveReutilizada(ClaveIdempotenciaReutilizadaException ex) {
+        return ResponseEntity.status(422).body(new ErrorDTO(ex.getMessage()));
     }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)

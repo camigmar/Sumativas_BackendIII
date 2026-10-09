@@ -7,8 +7,8 @@ import org.springframework.boot.persistence.autoconfigure.EntityScan;
 import org.springframework.data.jpa.repository.config.EnableJpaRepositories;
 
 @SpringBootApplication(scanBasePackages = {"com.banco.batch", "com.banco.security", "com.banco.core"})
-@EntityScan(basePackages = {"com.banco.batch.model", "com.banco.security.model"})
-@EnableJpaRepositories(basePackages = {"com.banco.batch.repository", "com.banco.security.repository"})
+@EntityScan(basePackages = {"com.banco.batch.model", "com.banco.security.model", "com.banco.core.model"})
+@EnableJpaRepositories(basePackages = {"com.banco.batch.repository", "com.banco.security.repository", "com.banco.core.repository"})
 @EnableBatchProcessing
 public class BatchApplication {
 

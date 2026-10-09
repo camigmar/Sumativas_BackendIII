@@ -36,6 +36,16 @@ public class Pago {
     @Column(nullable = false)
     private LocalDateTime fecha;
 
+    // Idempotency-Key del cliente (opcional, unica): una solicitud repetida devuelve este mismo pago.
+    @Column(unique = true, length = 100)
+    private String idempotencyKey;
+
+    // Tipo, cuentas y monto de la solicitud original: misma clave con otra huella -> 422.
+    private String huellaSolicitud;
+
+    // Status HTTP con que se respondio (201, 409, 404, 503...), para repetir la misma respuesta.
+    private Integer statusRespuesta;
+
     public Long getId() {
         return id;
     }
@@ -83,5 +93,23 @@ public class Pago {
     }
     public void setFecha(LocalDateTime fecha) {
         this.fecha = fecha;
+    }
+    public String getIdempotencyKey() {
+        return idempotencyKey;
+    }
+    public void setIdempotencyKey(String idempotencyKey) {
+        this.idempotencyKey = idempotencyKey;
+    }
+    public String getHuellaSolicitud() {
+        return huellaSolicitud;
+    }
+    public void setHuellaSolicitud(String huellaSolicitud) {
+        this.huellaSolicitud = huellaSolicitud;
+    }
+    public Integer getStatusRespuesta() {
+        return statusRespuesta;
+    }
+    public void setStatusRespuesta(Integer statusRespuesta) {
+        this.statusRespuesta = statusRespuesta;
     }
 }

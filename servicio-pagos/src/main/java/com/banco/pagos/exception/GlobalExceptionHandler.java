@@ -33,9 +33,19 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.NOT_FOUND).body(new ErrorDTO(ex.getMessage()));
     }
 
-    @ExceptionHandler(TransferenciaInvalidaException.class)
-    public ResponseEntity<ErrorDTO> handleTransferenciaInvalida(TransferenciaInvalidaException ex) {
+    @ExceptionHandler({TransferenciaInvalidaException.class, IdempotencyKeyInvalidaException.class})
+    public ResponseEntity<ErrorDTO> handleSolicitudInvalida(RuntimeException ex) {
         return ResponseEntity.badRequest().body(new ErrorDTO(ex.getMessage()));
+    }
+
+    @ExceptionHandler(ClaveIdempotenciaReutilizadaException.class)
+    public ResponseEntity<ErrorDTO> handleClaveReutilizada(ClaveIdempotenciaReutilizadaException ex) {
+        return ResponseEntity.status(422).body(new ErrorDTO(ex.getMessage()));
+    }
+
+    @ExceptionHandler(SolicitudEnProcesoException.class)
+    public ResponseEntity<ErrorDTO> handleSolicitudEnProceso(SolicitudEnProcesoException ex) {
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(new ErrorDTO(ex.getMessage()));
     }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)

@@ -11,6 +11,9 @@ import com.banco.core.dto.ClienteDTO;
 import com.banco.core.event.RetiroEventPublisher;
 import com.banco.core.event.RetiroRealizadoEvent;
 import com.banco.core.exception.CierreNoPermitidoException;
+import com.banco.core.exception.ClaveIdempotenciaReutilizadaException;
+import com.banco.core.model.MovimientoIdempotente;
+import com.banco.core.repository.MovimientoIdempotenteRepository;
 import com.banco.core.exception.ClienteInactivoException;
 import com.banco.core.exception.ClienteNoEncontradoException;
 import com.banco.core.exception.ClientesNoDisponibleException;
@@ -54,6 +57,9 @@ class CuentaServiceTest {
 
     @Mock
     private TransactionTemplate transactionTemplate;
+
+    @Mock
+    private MovimientoIdempotenteRepository movimientoIdempotenteRepository;
 
     @InjectMocks
     private CuentaService cuentaService;
@@ -309,6 +315,83 @@ class CuentaServiceTest {
 
         assertThat(cuenta.getEstado()).isEqualTo(EstadoCuenta.ACTIVA);
         assertThat(cuenta.estaCerrada()).isFalse();
+    }
+
+    // ------------------------------------------------------------------ Idempotencia
+
+    @Test
+    void debitarConClave_registraElMovimiento() {
+        CuentaInteres cuenta = cuenta(101L, 500.0);
+        when(cuentaInteresRepository.findByIdForUpdate(101L)).thenReturn(Optional.of(cuenta));
+        when(movimientoIdempotenteRepository.findById("pago-7-debito")).thenReturn(Optional.empty());
+
+        double nuevoSaldo = cuentaService.debitar(101L, 200.0, "pago-7-debito");
+
+        assertThat(nuevoSaldo).isEqualTo(300.0);
+        ArgumentCaptor<MovimientoIdempotente> captor = ArgumentCaptor.forClass(MovimientoIdempotente.class);
+        verify(movimientoIdempotenteRepository).save(captor.capture());
+        assertThat(captor.getValue().getClave()).isEqualTo("pago-7-debito");
+        assertThat(captor.getValue().getOperacion()).isEqualTo("debito");
+        assertThat(captor.getValue().getNuevoSaldo()).isEqualTo(300.0);
+    }
+
+    @Test
+    void debitarRepetidoConLaMismaClave_devuelveElResultadoOriginalSinMoverSaldo() {
+        CuentaInteres cuenta = cuenta(101L, 300.0);
+        when(cuentaInteresRepository.findByIdForUpdate(101L)).thenReturn(Optional.of(cuenta));
+        when(movimientoIdempotenteRepository.findById("pago-7-debito"))
+                .thenReturn(Optional.of(movimiento("pago-7-debito", 101L, "debito", 200.0, 300.0)));
+
+        double nuevoSaldo = cuentaService.debitar(101L, 200.0, "pago-7-debito");
+
+        assertThat(nuevoSaldo).isEqualTo(300.0);
+        assertThat(cuenta.getSaldo()).isEqualTo(300.0);
+        verify(cuentaInteresRepository, never()).save(any());
+        verify(movimientoIdempotenteRepository, never()).save(any());
+    }
+
+    @Test
+    void acreditarRepetidoConLaMismaClave_noAcreditaDosVeces() {
+        CuentaInteres cuenta = cuenta(102L, 350.0);
+        when(cuentaInteresRepository.findByIdForUpdate(102L)).thenReturn(Optional.of(cuenta));
+        when(movimientoIdempotenteRepository.findById("pago-8-credito"))
+                .thenReturn(Optional.of(movimiento("pago-8-credito", 102L, "credito", 250.0, 350.0)));
+
+        assertThat(cuentaService.acreditar(102L, 250.0, "pago-8-credito")).isEqualTo(350.0);
+        assertThat(cuenta.getSaldo()).isEqualTo(350.0);
+        verify(cuentaInteresRepository, never()).save(any());
+    }
+
+    @Test
+    void claveReutilizadaConOtroMovimiento_lanza422SinMoverSaldo() {
+        CuentaInteres cuenta = cuenta(101L, 500.0);
+        when(cuentaInteresRepository.findByIdForUpdate(101L)).thenReturn(Optional.of(cuenta));
+        when(movimientoIdempotenteRepository.findById("pago-7-debito"))
+                .thenReturn(Optional.of(movimiento("pago-7-debito", 101L, "debito", 200.0, 300.0)));
+
+        assertThrows(ClaveIdempotenciaReutilizadaException.class,
+                () -> cuentaService.debitar(101L, 999.0, "pago-7-debito"));
+        assertThat(cuenta.getSaldo()).isEqualTo(500.0);
+        verify(cuentaInteresRepository, never()).save(any());
+    }
+
+    @Test
+    void debitarSinClave_noUsaLaTablaDeIdempotencia() {
+        when(cuentaInteresRepository.findByIdForUpdate(101L)).thenReturn(Optional.of(cuenta(101L, 500.0)));
+
+        cuentaService.debitar(101L, 100.0);
+
+        verifyNoInteractions(movimientoIdempotenteRepository);
+    }
+
+    private MovimientoIdempotente movimiento(String clave, Long cuentaId, String operacion, Double monto, Double nuevoSaldo) {
+        MovimientoIdempotente m = new MovimientoIdempotente();
+        m.setClave(clave);
+        m.setCuentaId(cuentaId);
+        m.setOperacion(operacion);
+        m.setMonto(monto);
+        m.setNuevoSaldo(nuevoSaldo);
+        return m;
     }
 
     // El TransactionTemplate simulado ejecuta el callback directamente, sin transaccion real.

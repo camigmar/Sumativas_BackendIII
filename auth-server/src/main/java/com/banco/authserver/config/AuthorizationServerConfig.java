@@ -52,11 +52,14 @@ public class AuthorizationServerConfig {
             PasswordEncoder passwordEncoder,
             @Value("${oauth.clients.web.secret}") String webSecret,
             @Value("${oauth.clients.movil.secret}") String movilSecret,
-            @Value("${oauth.clients.cajero.secret}") String cajeroSecret) {
+            @Value("${oauth.clients.cajero.secret}") String cajeroSecret,
+            @Value("${oauth.clients.servicios-internos.secret}") String serviciosInternosSecret) {
         return new InMemoryRegisteredClientRepository(
                 crearCliente("web-client", webSecret, "web", passwordEncoder),
                 crearCliente("movil-client", movilSecret, "movil", passwordEncoder),
-                crearCliente("cajero-client", cajeroSecret, "cajero", passwordEncoder));
+                crearCliente("cajero-client", cajeroSecret, "cajero", passwordEncoder),
+                // Lo usan los servicios (y los BFF) para llamarse entre si; los servicios exigen scope "interno".
+                crearCliente("servicios-internos", serviciosInternosSecret, "interno", passwordEncoder));
     }
 
     private RegisteredClient crearCliente(String clientId, String secretoPlano, String scope,

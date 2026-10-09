@@ -12,6 +12,9 @@ import com.banco.core.dto.ClienteDTO;
 import com.banco.core.event.RetiroEventPublisher;
 import com.banco.core.event.RetiroRealizadoEvent;
 import com.banco.core.exception.CierreNoPermitidoException;
+import com.banco.core.exception.ClaveIdempotenciaReutilizadaException;
+import com.banco.core.model.MovimientoIdempotente;
+import com.banco.core.repository.MovimientoIdempotenteRepository;
 import com.banco.core.exception.ClienteInactivoException;
 import com.banco.core.exception.ClientesNoDisponibleException;
 import com.banco.core.exception.CuentaCerradaException;
@@ -34,17 +37,23 @@ public class CuentaService {
     private final RetiroEventPublisher retiroEventPublisher;
     private final ClientesClient clientesClient;
     private final TransactionTemplate transactionTemplate;
+    private final MovimientoIdempotenteRepository movimientoIdempotenteRepository;
+
+    static final String OPERACION_DEBITO = "debito";
+    static final String OPERACION_CREDITO = "credito";
 
     public CuentaService(CuentaInteresRepository cuentaInteresRepository,
                           EstadoCuentaAnualRepository estadoCuentaAnualRepository,
                           RetiroEventPublisher retiroEventPublisher,
                           ClientesClient clientesClient,
-                          TransactionTemplate transactionTemplate) {
+                          TransactionTemplate transactionTemplate,
+                          MovimientoIdempotenteRepository movimientoIdempotenteRepository) {
         this.cuentaInteresRepository = cuentaInteresRepository;
         this.estadoCuentaAnualRepository = estadoCuentaAnualRepository;
         this.retiroEventPublisher = retiroEventPublisher;
         this.clientesClient = clientesClient;
         this.transactionTemplate = transactionTemplate;
+        this.movimientoIdempotenteRepository = movimientoIdempotenteRepository;
     }
 
     // La consulta a servicio-clientes va fuera de la transaccion; solo el calculo del id y el
@@ -140,12 +149,28 @@ public class CuentaService {
         return nuevoSaldo;
     }
 
-    // Debito y credito para servicio-pagos: no publican evento (lo hace pagos) y leen la cuenta
-    // con bloqueo pesimista dentro de la transaccion para evitar carreras sobre el saldo.
     @Transactional
     public double debitar(Long cuentaId, Double monto) {
+        return debitar(cuentaId, monto, null);
+    }
+
+    @Transactional
+    public double acreditar(Long cuentaId, Double monto) {
+        return acreditar(cuentaId, monto, null);
+    }
+
+    // Debito y credito para servicio-pagos: no publican evento (lo hace pagos) y leen la cuenta
+    // con bloqueo pesimista dentro de la transaccion para evitar carreras sobre el saldo.
+    // Con claveIdempotencia, un movimiento repetido (reintento tras un timeout) devuelve el
+    // resultado original sin volver a mover el saldo.
+    @Transactional
+    public double debitar(Long cuentaId, Double monto, String claveIdempotencia) {
         validarMonto(monto);
         CuentaInteres cuenta = buscarParaActualizar(cuentaId);
+        Optional<Double> previo = movimientoYaAplicado(claveIdempotencia, cuentaId, OPERACION_DEBITO, monto);
+        if (previo.isPresent()) {
+            return previo.get();
+        }
         verificarAbierta(cuenta);
 
         if (cuenta.getSaldo() == null || cuenta.getSaldo() < monto) {
@@ -155,20 +180,57 @@ public class CuentaService {
         double nuevoSaldo = cuenta.getSaldo() - monto;
         cuenta.setSaldo(nuevoSaldo);
         cuentaInteresRepository.save(cuenta);
+        registrarMovimiento(claveIdempotencia, cuentaId, OPERACION_DEBITO, monto, nuevoSaldo);
         return nuevoSaldo;
     }
 
     @Transactional
-    public double acreditar(Long cuentaId, Double monto) {
+    public double acreditar(Long cuentaId, Double monto, String claveIdempotencia) {
         validarMonto(monto);
         CuentaInteres cuenta = buscarParaActualizar(cuentaId);
+        Optional<Double> previo = movimientoYaAplicado(claveIdempotencia, cuentaId, OPERACION_CREDITO, monto);
+        if (previo.isPresent()) {
+            return previo.get();
+        }
         verificarAbierta(cuenta);
 
         double saldoActual = cuenta.getSaldo() != null ? cuenta.getSaldo() : 0.0;
         double nuevoSaldo = saldoActual + monto;
         cuenta.setSaldo(nuevoSaldo);
         cuentaInteresRepository.save(cuenta);
+        registrarMovimiento(claveIdempotencia, cuentaId, OPERACION_CREDITO, monto, nuevoSaldo);
         return nuevoSaldo;
+    }
+
+    // Se consulta despues de bloquear la cuenta: dos peticiones con la misma clave sobre la misma
+    // cuenta se serializan en ese bloqueo y la segunda ya ve el movimiento de la primera.
+    private Optional<Double> movimientoYaAplicado(String clave, Long cuentaId, String operacion, Double monto) {
+        if (clave == null) {
+            return Optional.empty();
+        }
+        return movimientoIdempotenteRepository.findById(clave).map(previo -> {
+            if (!previo.getCuentaId().equals(cuentaId) || !previo.getOperacion().equals(operacion)
+                    || Double.compare(previo.getMonto(), monto) != 0) {
+                throw new ClaveIdempotenciaReutilizadaException("La Idempotency-Key " + clave
+                        + " ya se uso para otro movimiento (" + previo.getOperacion() + " de " + previo.getMonto()
+                        + " en la cuenta " + previo.getCuentaId() + ")");
+            }
+            return previo.getNuevoSaldo();
+        });
+    }
+
+    private void registrarMovimiento(String clave, Long cuentaId, String operacion, Double monto, double nuevoSaldo) {
+        if (clave == null) {
+            return;
+        }
+        MovimientoIdempotente movimiento = new MovimientoIdempotente();
+        movimiento.setClave(clave);
+        movimiento.setCuentaId(cuentaId);
+        movimiento.setOperacion(operacion);
+        movimiento.setMonto(monto);
+        movimiento.setNuevoSaldo(nuevoSaldo);
+        movimiento.setFecha(LocalDateTime.now());
+        movimientoIdempotenteRepository.save(movimiento);
     }
 
     // Lee la cuenta con bloqueo pesimista; debe llamarse dentro de una transaccion.

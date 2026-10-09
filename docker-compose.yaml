@@ -119,8 +119,8 @@ services:
       context: .
       dockerfile: servicio-cuentas/Dockerfile
     restart: on-failure
-    # Sin puerto publicado: la API interna de Core no tiene autenticacion, asi que solo se
-    # alcanza dentro de la red de compose (los BFF la encuentran via Eureka).
+    # Sin puerto publicado: solo se alcanza dentro de la red de compose (los BFF y pagos la encuentran
+    # via Eureka) y exige un token de servicios-internos con scope "interno".
     depends_on:
       config-server:
         condition: service_healthy
@@ -136,6 +136,8 @@ services:
       EUREKA_URL: http://eureka-server:8761/eureka/
       # Registra la IP del contenedor en Eureka en vez de su hostname interno.
       EUREKA_INSTANCE_PREFER_IP_ADDRESS: "true"
+      # Base de jwk-set-uri (validar JWT) y token-uri (token de servicios-internos) en config-repo.
+      AUTH_SERVER_URL: http://auth-server:9000
       SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/banco_xyz?createDatabaseIfNotExists=true
       SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
     healthcheck:
@@ -162,11 +164,11 @@ services:
       CONFIG_SERVER_URL: http://config-server:8888
       EUREKA_URL: http://eureka-server:8761/eureka/
       EUREKA_INSTANCE_PREFER_IP_ADDRESS: "true"
+      # Base de jwk-set-uri (validar JWT) y token-uri (token de servicios-internos) en config-repo.
+      AUTH_SERVER_URL: http://auth-server:9000
       # Base de datos propia del servicio, en la misma instancia de MySQL.
       SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/banco_clientes?createDatabaseIfNotExists=true
-    # Puerto publicado solo hasta el paso de seguridad OAuth2; despues se accedera a traves de los BFF.
-    ports:
-      - "8085:8085"
+    # Sin puerto publicado: solo accesible dentro de la red, con token de servicios-internos (scope "interno").
     healthcheck:
       test: ["CMD-SHELL", "bash -c '</dev/tcp/127.0.0.1/8085'"]
       interval: 10s
@@ -195,12 +197,12 @@ services:
       CONFIG_SERVER_URL: http://config-server:8888
       EUREKA_URL: http://eureka-server:8761/eureka/
       EUREKA_INSTANCE_PREFER_IP_ADDRESS: "true"
+      # Base de jwk-set-uri (validar JWT) y token-uri (token de servicios-internos) en config-repo.
+      AUTH_SERVER_URL: http://auth-server:9000
       # Base de datos propia del servicio, en la misma instancia de MySQL.
       SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/banco_pagos?createDatabaseIfNotExists=true
       SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
-    # Puerto publicado solo hasta el paso de seguridad OAuth2; despues se accedera a traves de los BFF.
-    ports:
-      - "8086:8086"
+    # Sin puerto publicado: solo accesible dentro de la red, con token de servicios-internos (scope "interno").
     healthcheck:
       test: ["CMD-SHELL", "bash -c '</dev/tcp/127.0.0.1/8086'"]
       interval: 10s
@@ -227,6 +229,8 @@ services:
       CONFIG_SERVER_URL: http://config-server:8888
       EUREKA_URL: http://eureka-server:8761/eureka/
       EUREKA_INSTANCE_PREFER_IP_ADDRESS: "true"
+      # Base de jwk-set-uri (validar JWT) y token-uri (token de servicios-internos) en config-repo.
+      AUTH_SERVER_URL: http://auth-server:9000
       # Las claves publicas para validar los tokens se descargan de auth-server dentro de la red.
       SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_JWKSETURI: http://auth-server:9000/oauth2/jwks
     ports:
@@ -257,6 +261,8 @@ services:
       CONFIG_SERVER_URL: http://config-server:8888
       EUREKA_URL: http://eureka-server:8761/eureka/
       EUREKA_INSTANCE_PREFER_IP_ADDRESS: "true"
+      # Base de jwk-set-uri (validar JWT) y token-uri (token de servicios-internos) en config-repo.
+      AUTH_SERVER_URL: http://auth-server:9000
       SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_JWKSETURI: http://auth-server:9000/oauth2/jwks
     ports:
       - "8082:8082"
@@ -286,6 +292,8 @@ services:
       CONFIG_SERVER_URL: http://config-server:8888
       EUREKA_URL: http://eureka-server:8761/eureka/
       EUREKA_INSTANCE_PREFER_IP_ADDRESS: "true"
+      # Base de jwk-set-uri (validar JWT) y token-uri (token de servicios-internos) en config-repo.
+      AUTH_SERVER_URL: http://auth-server:9000
       SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_JWKSETURI: http://auth-server:9000/oauth2/jwks
     ports:
       - "8083:8083"
@@ -317,6 +325,8 @@ services:
       CONFIG_SERVER_URL: http://config-server:8888
       EUREKA_URL: http://eureka-server:8761/eureka/
       EUREKA_INSTANCE_PREFER_IP_ADDRESS: "true"
+      # Base de jwk-set-uri (validar JWT) y token-uri (token de servicios-internos) en config-repo.
+      AUTH_SERVER_URL: http://auth-server:9000
       # Base de datos propia del servicio, en la misma instancia de MySQL.
       SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/banco_auditoria?createDatabaseIfNotExists=true
       SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092

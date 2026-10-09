@@ -16,6 +16,10 @@ import java.util.List;
 @RequestMapping("/api/pagos")
 public class PagoController {
 
+    // Opcional: repetir la solicitud con la misma clave devuelve el resultado original (201 o el mismo error)
+    // sin ejecutarla de nuevo; la misma clave con otro cuerpo responde 422.
+    static final String IDEMPOTENCY_KEY = "Idempotency-Key";
+
     private final PagoService pagoService;
 
     public PagoController(PagoService pagoService) {
@@ -23,18 +27,21 @@ public class PagoController {
     }
 
     @PostMapping("/retiro")
-    public ResponseEntity<PagoResponseDTO> retiro(@Valid @RequestBody RetiroRequestDTO request) {
-        return ResponseEntity.status(HttpStatus.CREATED).body(pagoService.retirar(request));
+    public ResponseEntity<PagoResponseDTO> retiro(@Valid @RequestBody RetiroRequestDTO request,
+                                                  @RequestHeader(value = IDEMPOTENCY_KEY, required = false) String clave) {
+        return ResponseEntity.status(HttpStatus.CREATED).body(pagoService.retirar(request, clave));
     }
 
     @PostMapping("/deposito")
-    public ResponseEntity<PagoResponseDTO> deposito(@Valid @RequestBody DepositoRequestDTO request) {
-        return ResponseEntity.status(HttpStatus.CREATED).body(pagoService.depositar(request));
+    public ResponseEntity<PagoResponseDTO> deposito(@Valid @RequestBody DepositoRequestDTO request,
+                                                    @RequestHeader(value = IDEMPOTENCY_KEY, required = false) String clave) {
+        return ResponseEntity.status(HttpStatus.CREATED).body(pagoService.depositar(request, clave));
     }
 
     @PostMapping("/transferencia")
-    public ResponseEntity<PagoResponseDTO> transferencia(@Valid @RequestBody TransferenciaRequestDTO request) {
-        return ResponseEntity.status(HttpStatus.CREATED).body(pagoService.transferir(request));
+    public ResponseEntity<PagoResponseDTO> transferencia(@Valid @RequestBody TransferenciaRequestDTO request,
+                                                         @RequestHeader(value = IDEMPOTENCY_KEY, required = false) String clave) {
+        return ResponseEntity.status(HttpStatus.CREATED).body(pagoService.transferir(request, clave));
     }
 
     @GetMapping("/{id}")

@@ -9,25 +9,26 @@ import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.stereotype.Component;
 
 @Component
-public class RetiroAuditoriaListener {
+public class TransaccionAuditoriaListener {
 
-    public static final String TOPICO = "retiros-realizados";
+    public static final String TOPICO = "transacciones-completadas";
 
-    private static final Logger logger = LoggerFactory.getLogger(RetiroAuditoriaListener.class);
+    private static final Logger logger = LoggerFactory.getLogger(TransaccionAuditoriaListener.class);
 
     private final RegistroEventoService registroEventoService;
     private final String instancia;
 
-    public RetiroAuditoriaListener(RegistroEventoService registroEventoService,
-                                   @Value("${HOSTNAME:local}") String instancia) {
+    public TransaccionAuditoriaListener(RegistroEventoService registroEventoService,
+                                        @Value("${HOSTNAME:local}") String instancia) {
         this.registroEventoService = registroEventoService;
         this.instancia = instancia;
     }
 
+    // tipoEvento = tipo del pago (DEPOSITO, RETIRO o TRANSFERENCIA).
     @KafkaListener(topics = TOPICO)
-    public void onRetiroRealizado(ConsumerRecord<String, String> registro) {
+    public void onTransaccionCompletada(ConsumerRecord<String, String> registro) {
         logger.info("[AUDITORIA] instancia={} | topico={} | particion={} | offset={} | payload={}",
                 instancia, registro.topic(), registro.partition(), registro.offset(), registro.value());
-        registroEventoService.registrar(registro, RegistroEventoService::tipoRetiro);
+        registroEventoService.registrar(registro, RegistroEventoService::campoTipo);
     }
 }

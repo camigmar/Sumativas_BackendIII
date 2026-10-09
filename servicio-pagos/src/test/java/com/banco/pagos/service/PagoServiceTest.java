@@ -5,18 +5,20 @@ import com.banco.pagos.dto.DepositoRequestDTO;
 import com.banco.pagos.dto.PagoResponseDTO;
 import com.banco.pagos.dto.RetiroRequestDTO;
 import com.banco.pagos.dto.TransferenciaRequestDTO;
+import com.banco.pagos.event.PagoEventPublisher;
+import com.banco.pagos.event.TipoAlerta;
 import com.banco.pagos.exception.CuentaNoEncontradaException;
 import com.banco.pagos.exception.CuentasNoDisponibleException;
+import com.banco.pagos.exception.OperacionRechazadaException;
 import com.banco.pagos.exception.PagoFallidoException;
-import com.banco.pagos.exception.SaldoInsuficienteException;
 import com.banco.pagos.exception.TransferenciaInvalidaException;
 import com.banco.pagos.model.EstadoPago;
 import com.banco.pagos.model.Pago;
 import com.banco.pagos.model.TipoPago;
 import com.banco.pagos.repository.PagoRepository;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.http.HttpStatus;
@@ -27,6 +29,9 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -36,18 +41,28 @@ import static org.mockito.Mockito.when;
 @ExtendWith(MockitoExtension.class)
 class PagoServiceTest {
 
+    private static final double UMBRAL_MONTO_ELEVADO = 10000.0;
+
     @Mock
     private PagoRepository pagoRepository;
 
     @Mock
     private CuentasClient cuentasClient;
 
-    @InjectMocks
+    @Mock
+    private PagoEventPublisher eventPublisher;
+
     private PagoService pagoService;
 
     // Estado del pago en cada save, en orden (el mock recibe siempre la misma instancia).
     private final List<EstadoPago> estadosGuardados = new ArrayList<>();
     private Pago pagoGuardado;
+
+    @BeforeEach
+    void setUp() {
+        // Construccion manual: el umbral es un double inyectado con @Value.
+        pagoService = new PagoService(pagoRepository, cuentasClient, eventPublisher, UMBRAL_MONTO_ELEVADO);
+    }
 
     private void simularGuardado() {
         when(pagoRepository.save(any(Pago.class))).thenAnswer(invocacion -> {
@@ -77,7 +92,7 @@ class PagoServiceTest {
     void retirar_saldoInsuficienteQuedaFallidoConMotivoY409() {
         simularGuardado();
         when(cuentasClient.debitar(101L, 900.0))
-                .thenThrow(new SaldoInsuficienteException("Saldo insuficiente en la cuenta 101"));
+                .thenThrow(new OperacionRechazadaException("Saldo insuficiente para realizar el debito"));
 
         PagoFallidoException ex = assertThrows(PagoFallidoException.class,
                 () -> pagoService.retirar(new RetiroRequestDTO(101L, 900.0)));
@@ -158,5 +173,114 @@ class PagoServiceTest {
                 () -> pagoService.transferir(new TransferenciaRequestDTO(101L, 101L, 150.0)));
         verifyNoInteractions(pagoRepository);
         verifyNoInteractions(cuentasClient);
+        verifyNoInteractions(eventPublisher);
+    }
+
+    // ------------------------------------------------------------------ Eventos
+
+    @Test
+    void pagoCompletado_publicaTransaccionCompletadaSinAlertas() {
+        simularGuardado();
+
+        pagoService.depositar(new DepositoRequestDTO(102L, 300.0));
+
+        verify(eventPublisher).publicarTransaccionCompletada(pagoGuardado);
+        verify(eventPublisher, never()).publicarAlerta(any(), any(), anyString());
+    }
+
+    @Test
+    void pagoFallidoPorRechazoDeCuentas_publicaOperacionRechazadaYNoCompletado() {
+        simularGuardado();
+        when(cuentasClient.debitar(109L, 10.0))
+                .thenThrow(new OperacionRechazadaException("La cuenta 109 esta cerrada"));
+
+        assertThrows(PagoFallidoException.class, () -> pagoService.retirar(new RetiroRequestDTO(109L, 10.0)));
+
+        verify(eventPublisher).publicarAlerta(TipoAlerta.OPERACION_RECHAZADA, pagoGuardado, "La cuenta 109 esta cerrada");
+        verify(eventPublisher, never()).publicarTransaccionCompletada(any());
+    }
+
+    @Test
+    void pagoFallidoPorCuentasCaido_noPublicaAlerta() {
+        simularGuardado();
+        when(cuentasClient.debitar(101L, 10.0))
+                .thenThrow(new CuentasNoDisponibleException("servicio-cuentas no esta disponible", null));
+
+        PagoFallidoException ex = assertThrows(PagoFallidoException.class,
+                () -> pagoService.retirar(new RetiroRequestDTO(101L, 10.0)));
+
+        assertThat(ex.getStatus()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
+        verifyNoInteractions(eventPublisher);
+    }
+
+    @Test
+    void transferenciaCompensada_publicaCompensacionEjecutada() {
+        simularGuardado();
+        when(cuentasClient.acreditar(999L, 150.0))
+                .thenThrow(new CuentaNoEncontradaException("La cuenta 999 no existe"));
+
+        assertThrows(PagoFallidoException.class,
+                () -> pagoService.transferir(new TransferenciaRequestDTO(101L, 999L, 150.0)));
+
+        verify(eventPublisher).publicarAlerta(eq(TipoAlerta.COMPENSACION_EJECUTADA), eq(pagoGuardado), anyString());
+        verify(eventPublisher, never()).publicarTransaccionCompletada(any());
+    }
+
+    @Test
+    void transferenciaSinCompensar_publicaRequiereRevision() {
+        simularGuardado();
+        when(cuentasClient.acreditar(102L, 150.0))
+                .thenThrow(new CuentasNoDisponibleException("servicio-cuentas no esta disponible", null));
+        when(cuentasClient.acreditar(101L, 150.0))
+                .thenThrow(new CuentasNoDisponibleException("servicio-cuentas no esta disponible", null));
+
+        assertThrows(PagoFallidoException.class,
+                () -> pagoService.transferir(new TransferenciaRequestDTO(101L, 102L, 150.0)));
+
+        verify(eventPublisher).publicarAlerta(eq(TipoAlerta.REQUIERE_REVISION), eq(pagoGuardado), anyString());
+    }
+
+    @Test
+    void pagoSobreElUmbral_publicaCompletadoYMontoElevado() {
+        simularGuardado();
+
+        pagoService.transferir(new TransferenciaRequestDTO(101L, 102L, UMBRAL_MONTO_ELEVADO));
+
+        verify(eventPublisher).publicarTransaccionCompletada(pagoGuardado);
+        verify(eventPublisher).publicarAlerta(eq(TipoAlerta.MONTO_ELEVADO), eq(pagoGuardado), anyString());
+    }
+
+    @Test
+    void pagoBajoElUmbral_noPublicaMontoElevado() {
+        simularGuardado();
+
+        pagoService.transferir(new TransferenciaRequestDTO(101L, 102L, UMBRAL_MONTO_ELEVADO - 1));
+
+        verify(eventPublisher, never()).publicarAlerta(eq(TipoAlerta.MONTO_ELEVADO), any(), anyString());
+    }
+
+    @Test
+    void fallaDelPublisher_noCambiaElResultadoDelPago() {
+        simularGuardado();
+        doThrow(new RuntimeException("Kafka caido")).when(eventPublisher).publicarTransaccionCompletada(any());
+
+        PagoResponseDTO respuesta = pagoService.depositar(new DepositoRequestDTO(102L, 300.0));
+
+        assertThat(respuesta.estado()).isEqualTo(EstadoPago.COMPLETADO);
+        assertThat(estadosGuardados).containsExactly(EstadoPago.PENDIENTE, EstadoPago.COMPLETADO);
+    }
+
+    @Test
+    void fallaDelPublisherEnUnaAlerta_mantieneElErrorOriginalDelPago() {
+        simularGuardado();
+        when(cuentasClient.debitar(101L, 900.0))
+                .thenThrow(new OperacionRechazadaException("Saldo insuficiente para realizar el debito"));
+        doThrow(new RuntimeException("Kafka caido")).when(eventPublisher).publicarAlerta(any(), any(), anyString());
+
+        PagoFallidoException ex = assertThrows(PagoFallidoException.class,
+                () -> pagoService.retirar(new RetiroRequestDTO(101L, 900.0)));
+
+        assertThat(ex.getStatus()).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(ex.getEstado()).isEqualTo(EstadoPago.FALLIDO);
     }
 }
